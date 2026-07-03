@@ -3,11 +3,13 @@
 namespace Kyqo\Auth\Guards;
 
 use Kyqo\Auth\GuardInterface;
+use Kyqo\Auth\UserProviderInterface;
 
 /**
  * Token-based authentication guard.
  *
- * FIX SEC-5: id() now returns the authenticated user's ID instead of null.
+ * MINOR-V4-4: Accepts an optional UserProviderInterface.
+ * SEC-5 FIX (maintained): id() returns user's primary key, not null.
  */
 class TokenGuard implements GuardInterface
 {
@@ -15,11 +17,16 @@ class TokenGuard implements GuardInterface
     protected array  $config;
     protected mixed  $user         = null;
     protected bool   $userResolved = false;
+    protected ?UserProviderInterface $provider;
 
-    public function __construct(string $name, array $config)
-    {
-        $this->name   = $name;
-        $this->config = $config;
+    public function __construct(
+        string $name,
+        array $config,
+        ?UserProviderInterface $provider = null
+    ) {
+        $this->name     = $name;
+        $this->config   = $config;
+        $this->provider = $provider;
     }
 
     public function user(): mixed
@@ -27,29 +34,21 @@ class TokenGuard implements GuardInterface
         if ($this->userResolved) {
             return $this->user;
         }
-
         $this->userResolved = true;
         $token = $this->extractToken();
-
         if ($token === null) {
             return null;
         }
-
-        $this->user = $this->retrieveByToken($token);
+        $this->user = $this->provider?->retrieveByToken($token);
         return $this->user;
     }
 
     public function check(): bool { return $this->user() !== null; }
 
-    /**
-     * FIX SEC-5: Return the authenticated user's primary key, not null.
-     */
     public function id(): mixed
     {
         $user = $this->user();
-        if ($user === null) {
-            return null;
-        }
+        if ($user === null) return null;
         return is_array($user) ? ($user['id'] ?? null) : ($user->id ?? null);
     }
 
@@ -76,18 +75,10 @@ class TokenGuard implements GuardInterface
                 return $token;
             }
         }
-
         $inputToken = $_GET['api_token'] ?? $_POST['api_token'] ?? null;
-        if (is_string($inputToken) && strlen($inputToken) > 0) {
+        if (is_string($inputToken) && $inputToken !== '') {
             return $inputToken;
         }
-
-        return null;
-    }
-
-    protected function retrieveByToken(string $token): mixed
-    {
-        // Stub — implement via UserProvider
         return null;
     }
 }

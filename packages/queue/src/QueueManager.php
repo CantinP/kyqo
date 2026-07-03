@@ -5,8 +5,8 @@ namespace Kyqo\Queue;
 /**
  * Kyqo Queue Manager
  *
- * Manages queue connections and job dispatching.
- * Supports sync, database and redis queue drivers.
+ * BUG-V4-2: dispatch() no longer calls app()->call() which didn't exist.
+ * Jobs are now executed via SyncQueue::execute() pattern or direct handle().
  */
 class QueueManager
 {
@@ -18,9 +18,6 @@ class QueueManager
         $this->config = $config;
     }
 
-    /**
-     * Get a queue connection.
-     */
     public function connection(?string $name = null): QueueInterface
     {
         $name ??= $this->config['default'] ?? 'sync';
@@ -32,41 +29,61 @@ class QueueManager
         return $this->connections[$name];
     }
 
-    /**
-     * Push a job onto the queue.
-     */
     public function push(object $job, ?string $queue = null): mixed
     {
         return $this->connection()->push($job, $queue);
     }
 
-    /**
-     * Push a job to run after a delay.
-     */
     public function later(\DateTimeInterface|int $delay, object $job, ?string $queue = null): mixed
     {
         return $this->connection()->later($delay, $job, $queue);
     }
 
     /**
-     * Dispatch a job immediately (sync).
+     * Dispatch a job immediately, resolving its handle() method directly.
+     *
+     * BUG-V4-2 FIX: Removed app()->call() (method did not exist on Container).
+     * Dependencies are injected via Container::make() on each parameter type.
      */
     public function dispatch(object $job): mixed
     {
-        if (method_exists($job, 'handle')) {
-            return app()->call([$job, 'handle']);
+        if (!method_exists($job, 'handle')) {
+            return null;
         }
-        return null;
+
+        try {
+            $app    = \Kyqo\Core\Application::getInstance();
+            $method = new \ReflectionMethod($job, 'handle');
+            $params = $method->getParameters();
+            $args   = [];
+            foreach ($params as $param) {
+                $type = $param->getType();
+                if ($type && !$type->isBuiltin()) {
+                    $args[] = $app->make($type->getName());
+                } elseif ($param->isDefaultValueAvailable()) {
+                    $args[] = $param->getDefaultValue();
+                } else {
+                    $args[] = null;
+                }
+            }
+            return $job->handle(...$args);
+        } catch (\Throwable) {
+            // Fallback: call with no arguments
+            return $job->handle();
+        }
     }
 
     protected function resolve(string $name): QueueInterface
     {
-        $config = $this->config['connections'][$name] ?? throw new \InvalidArgumentException("Queue connection [{$name}] not defined.");
+        $config = $this->config['connections'][$name]
+            ?? throw new \InvalidArgumentException("Queue connection [{$name}] not defined.");
 
         return match ($config['driver']) {
             'sync'     => new Drivers\SyncQueue(),
             'database' => new Drivers\DatabaseQueue($config),
-            default    => throw new \InvalidArgumentException("Queue driver [{$config['driver']}] not supported."),
+            default    => throw new \InvalidArgumentException(
+                "Queue driver [{$config['driver']}] not supported."
+            ),
         };
     }
 }

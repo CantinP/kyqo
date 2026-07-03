@@ -4,6 +4,7 @@ namespace Kyqo\Core\Container;
 
 use Closure;
 use ReflectionClass;
+use ReflectionMethod;
 use Kyqo\Core\Contracts\Container as ContainerContract;
 use Kyqo\Core\Exceptions\ContainerException;
 
@@ -11,15 +12,13 @@ class Container implements ContainerContract
 {
     protected static ?self $instance = null;
 
-    protected array $bindings         = [];
-    protected array $instances        = [];
-    protected array $aliases          = [];
-    protected array $abstractAliases  = [];
+    protected array $bindings        = [];
+    protected array $instances       = [];
+    protected array $aliases         = [];
+    protected array $abstractAliases = [];
 
-    /** Only classes in these namespaces can be auto-resolved. */
     protected array $trustedNamespaces = ['Kyqo\\', 'App\\'];
 
-    /** Classes blocked from container resolution regardless of namespace. */
     protected array $blockedClasses = [
         'PDO', 'SplFileObject', 'DirectoryIterator',
         'RecursiveDirectoryIterator', 'FilesystemIterator',
@@ -97,16 +96,42 @@ class Container implements ContainerContract
     }
 
     /**
-     * Register an alias.
-     * FIX BUG-NEW-2: Detect alias cycles before registering.
+     * Call a callable, injecting dependencies for any typed parameters.
+     *
+     * BUG-V4-2 FIX: Container::call() was referenced in QueueManager::dispatch()
+     * but never existed. This method resolves type-hinted parameters via make()
+     * and merges any supplied primitives.
+     *
+     * @param callable|array $callable  Any PHP callable.
+     * @param array          $primitives Named overrides for primitive parameters.
      */
+    public function call(callable|array $callable, array $primitives = []): mixed
+    {
+        if (is_array($callable)) {
+            [$object, $method] = $callable;
+            $reflection = new ReflectionMethod($object, $method);
+            $dependencies = $this->resolveDependencies($reflection->getParameters(), $primitives);
+            return $reflection->invokeArgs($object, $dependencies);
+        }
+
+        if (is_string($callable) && str_contains($callable, '::')) {
+            [$class, $method] = explode('::', $callable, 2);
+            $reflection = new ReflectionMethod($class, $method);
+            $dependencies = $this->resolveDependencies($reflection->getParameters(), $primitives);
+            return $reflection->invokeArgs(null, $dependencies);
+        }
+
+        $reflection   = new \ReflectionFunction(\Closure::fromCallable($callable));
+        $dependencies = $this->resolveDependencies($reflection->getParameters(), $primitives);
+        return $reflection->invokeArgs($dependencies);
+    }
+
     public function alias(string $abstract, string $alias): void
     {
         if ($abstract === $alias) {
             throw new ContainerException("[{$abstract}] cannot be aliased to itself.");
         }
 
-        // Detect cycle: if $alias is already an alias chain that resolves to $abstract, refuse.
         $resolved = $alias;
         $visited  = [$abstract];
         while (isset($this->aliases[$resolved])) {
@@ -117,8 +142,8 @@ class Container implements ContainerContract
             $visited[] = $resolved;
         }
 
-        $this->aliases[$alias]               = $abstract;
-        $this->abstractAliases[$abstract][]  = $alias;
+        $this->aliases[$alias]              = $abstract;
+        $this->abstractAliases[$abstract][] = $alias;
     }
 
     public function bound(string $abstract): bool
@@ -216,15 +241,11 @@ class Container implements ContainerContract
         return isset($this->aliases[$name]);
     }
 
-    /**
-     * FIX BUG-NEW-2: Iterative alias resolution — no recursion, no stack overflow.
-     */
     protected function getAlias(string $abstract): string
     {
         $visited = [];
         while (isset($this->aliases[$abstract])) {
             if (isset($visited[$abstract])) {
-                // Cycle detected at runtime — break out safely
                 break;
             }
             $visited[$abstract] = true;

@@ -8,9 +8,9 @@ use Kyqo\Http\Response;
 /**
  * CSRF Token Middleware
  *
- * FIX SEC-1: rotateToken() is NO LONGER called inside handle().
- * Token rotation happens once, in Kernel::terminate(), after the
- * response has been sent. This prevents double-rotation.
+ * SEC-V4-1 FIX: All @session_start() calls replaced with clean session_status() guards.
+ * SEC-1 FIX (maintained): rotateToken() is NOT called inside handle().
+ * Token rotation happens once, in Kernel::terminate(), after the response is sent.
  */
 class VerifyCsrfToken
 {
@@ -35,7 +35,6 @@ class VerifyCsrfToken
             );
         }
 
-        // FIX SEC-1: Do NOT rotate here. Kernel::terminate() handles rotation.
         return $this->addCookieToResponse($next($request));
     }
 
@@ -46,32 +45,33 @@ class VerifyCsrfToken
 
     public static function getToken(): string
     {
-        if (session_status() !== PHP_SESSION_ACTIVE) {
-            @session_start();
-        }
-
+        self::ensureSession();
         if (!isset($_SESSION['_kyqo_csrf_token'])) {
             $_SESSION['_kyqo_csrf_token'] = self::generateToken();
         }
-
         return $_SESSION['_kyqo_csrf_token'];
     }
 
     public static function rotateToken(): string
     {
-        if (session_status() !== PHP_SESSION_ACTIVE) {
-            @session_start();
-        }
-
+        self::ensureSession();
         $_SESSION['_kyqo_csrf_token'] = self::generateToken();
         return $_SESSION['_kyqo_csrf_token'];
     }
 
+    /**
+     * SEC-V4-1 FIX: Clean session guard — no @ suppression.
+     */
+    private static function ensureSession(): void
+    {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+    }
+
     protected function tokensMatch(Request $request): bool
     {
-        if (session_status() !== PHP_SESSION_ACTIVE) {
-            @session_start();
-        }
+        self::ensureSession();
 
         $sessionToken = $_SESSION['_kyqo_csrf_token'] ?? null;
         $requestToken = $request->get('_token')
@@ -104,7 +104,6 @@ class VerifyCsrfToken
     {
         if ($response instanceof Response) {
             $token = self::getToken();
-            // FIX SEC-2: Use addCookie() not setHeader() so multiple cookies coexist
             $response->addCookie(
                 'XSRF-TOKEN=' . urlencode($token) . '; Path=/; SameSite=Strict; HttpOnly; Secure'
             );

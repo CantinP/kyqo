@@ -8,18 +8,17 @@ use Kyqo\Http\Response;
 /**
  * Rate Limiting Middleware
  *
- * FIX SEC-3: Read + write are now protected by an exclusive flock() so
- *            concurrent requests cannot both read count=N and both pass.
- * MINOR FIX: Expired throttle files are pruned on each request (probabilistic).
+ * SEC-3 FIX (maintained): Atomic read+write via flock(LOCK_EX).
+ * SEC-V4-2 FIX: umask(0077) is applied BEFORE fopen() so the file is
+ *               created with 0600 from the start — no race window.
+ * MINOR FIX (maintained): Probabilistic GC sweep of expired entries.
  */
 class ThrottleRequests
 {
     protected int    $maxAttempts;
     protected int    $decayMinutes;
     protected string $storePath;
-
-    /** Probability (1 in N) of running the GC sweep on any given request. */
-    protected int $gcDivisor = 100;
+    protected int    $gcDivisor = 100;
 
     public function __construct(int $maxAttempts = 60, int $decayMinutes = 1)
     {
@@ -28,13 +27,13 @@ class ThrottleRequests
         $this->storePath    = sys_get_temp_dir() . '/kyqo_throttle';
 
         if (!is_dir($this->storePath)) {
+            // SEC: restrictive dir permissions
             mkdir($this->storePath, 0700, true);
         }
     }
 
     public function handle(Request $request, \Closure $next): mixed
     {
-        // Probabilistic GC: prune expired files ~1% of requests
         if (random_int(1, $this->gcDivisor) === 1) {
             $this->pruneExpired();
         }
@@ -43,10 +42,13 @@ class ThrottleRequests
         $file = $this->storePath . '/' . $key . '.json';
         $now  = time();
 
-        // FIX SEC-3: Atomic read+increment via exclusive file lock
+        // SEC-V4-2 FIX: set restrictive umask BEFORE fopen so the file
+        // is created 0600 from the start, not 0644 with a race window.
+        $oldUmask = umask(0077);
         $fh = fopen($file, 'c+');
+        umask($oldUmask);
+
         if ($fh === false) {
-            // Cannot open throttle file — fail open (do not block the request)
             return $next($request);
         }
 
@@ -68,8 +70,6 @@ class ThrottleRequests
         flock($fh, LOCK_UN);
         fclose($fh);
 
-        @chmod($file, 0600);
-
         $remaining  = max(0, $this->maxAttempts - $data['count']);
         $retryAfter = max(0, $data['reset_at'] - $now);
 
@@ -78,11 +78,11 @@ class ThrottleRequests
                 json_encode(['message' => 'Too Many Requests.', 'retry_after' => $retryAfter]),
                 429,
                 [
-                    'Content-Type'       => 'application/json',
-                    'Retry-After'        => (string) $retryAfter,
-                    'X-RateLimit-Limit'  => (string) $this->maxAttempts,
+                    'Content-Type'          => 'application/json',
+                    'Retry-After'           => (string) $retryAfter,
+                    'X-RateLimit-Limit'     => (string) $this->maxAttempts,
                     'X-RateLimit-Remaining' => '0',
-                    'X-RateLimit-Reset'  => (string) $data['reset_at'],
+                    'X-RateLimit-Reset'     => (string) $data['reset_at'],
                 ]
             );
         }
@@ -105,9 +105,6 @@ class ThrottleRequests
         return hash('sha256', $ip . '|' . $path);
     }
 
-    /**
-     * Delete throttle files whose window has expired.
-     */
     protected function pruneExpired(): void
     {
         $now   = time();

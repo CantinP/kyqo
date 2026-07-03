@@ -3,81 +3,68 @@
 namespace Kyqo\Auth\Guards;
 
 use Kyqo\Auth\GuardInterface;
+use Kyqo\Auth\UserProviderInterface;
 
 /**
  * Session-based authentication guard.
  *
- * Authenticates users via PHP session storage.
- * Passwords are verified with password_verify() (bcrypt/argon2).
+ * MINOR-V4-4: Now accepts an optional UserProviderInterface so that
+ * retrieveById() and retrieveByCredentials() are not permanent stubs.
  *
  * SECURITY:
  * - Session is regenerated on login to prevent session fixation.
- * - Password comparison uses password_verify() — never plain comparison.
- * - User ID stored in session, not the full user object.
+ * - Password comparison uses password_verify().
+ * - User ID stored in session, not the full object.
  */
 class SessionGuard implements GuardInterface
 {
     protected string $name;
-    protected array $config;
-    protected mixed $user = null;
-    protected bool $userResolved = false;
-
+    protected array  $config;
+    protected mixed  $user         = null;
+    protected bool   $userResolved = false;
     protected string $sessionKey;
+    protected ?UserProviderInterface $provider;
 
-    public function __construct(string $name, array $config)
-    {
+    public function __construct(
+        string $name,
+        array $config,
+        ?UserProviderInterface $provider = null
+    ) {
         $this->name       = $name;
         $this->config     = $config;
         $this->sessionKey = '_kyqo_auth_' . $name;
+        $this->provider   = $provider;
     }
 
-    /**
-     * Get the currently authenticated user.
-     */
     public function user(): mixed
     {
         if ($this->userResolved) {
             return $this->user;
         }
-
         $this->userResolved = true;
-
-        $id = $_SESSION[$this->sessionKey] ?? null;
+        $id = $this->sessionId();
         if ($id === null) {
             return null;
         }
-
         $this->user = $this->retrieveById($id);
         return $this->user;
     }
 
-    public function check(): bool
-    {
-        return $this->user() !== null;
-    }
+    public function check(): bool { return $this->user() !== null; }
 
-    public function id(): mixed
-    {
-        return $_SESSION[$this->sessionKey] ?? null;
-    }
+    public function id(): mixed { return $this->sessionId(); }
 
-    /**
-     * Attempt to authenticate with credentials.
-     *
-     * SECURITY: Uses password_verify() for safe hash comparison.
-     * SECURITY: Session is regenerated on successful login (prevents fixation).
-     */
     public function attempt(array $credentials): bool
     {
         $user = $this->retrieveByCredentials($credentials);
-
         if ($user === null) {
             return false;
         }
 
-        $passwordField = $this->config['password_field'] ?? 'password';
-        $plain         = $credentials[$passwordField] ?? '';
-        $hashed        = is_array($user) ? ($user[$passwordField] ?? '') : ($user->$passwordField ?? '');
+        $passwordField = $this->provider?->passwordField()
+            ?? ($this->config['password_field'] ?? 'password');
+        $plain  = $credentials[$passwordField] ?? '';
+        $hashed = is_array($user) ? ($user[$passwordField] ?? '') : ($user->$passwordField ?? '');
 
         if (!password_verify($plain, $hashed)) {
             return false;
@@ -87,56 +74,55 @@ class SessionGuard implements GuardInterface
         return true;
     }
 
-    /**
-     * Log a user in.
-     * SECURITY: Regenerates session ID to prevent session fixation attacks.
-     */
     public function login(mixed $user): void
     {
         $id = is_array($user) ? ($user['id'] ?? null) : ($user->id ?? null);
 
-        // Regenerate session ID on login — prevents session fixation
-        if (session_status() === PHP_SESSION_ACTIVE) {
-            session_regenerate_id(true);
-        }
+        $this->guardSession();
+        session_regenerate_id(true);
 
         $_SESSION[$this->sessionKey] = $id;
         $this->user         = $user;
         $this->userResolved = true;
     }
 
-    /**
-     * Log the current user out.
-     */
     public function logout(): void
     {
         unset($_SESSION[$this->sessionKey]);
         $this->user         = null;
         $this->userResolved = false;
 
-        // Regenerate session ID on logout to invalidate old session
-        if (session_status() === PHP_SESSION_ACTIVE) {
-            session_regenerate_id(true);
-        }
+        $this->guardSession();
+        session_regenerate_id(true);
+    }
+
+    // ---- Helpers ------------------------------------------------------------
+
+    protected function sessionId(): mixed
+    {
+        $this->guardSession();
+        return $_SESSION[$this->sessionKey] ?? null;
     }
 
     /**
-     * Retrieve a user by their ID.
-     * Override in your application by binding a UserProvider.
+     * SEC-V4-1 FIX: Replace @session_start() with a clean status check.
+     * Throws only if something truly unexpected happens.
      */
+    protected function guardSession(): void
+    {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        // PHP_SESSION_DISABLED would be a server mis-configuration — let it surface naturally.
+    }
+
     protected function retrieveById(mixed $id): mixed
     {
-        // Stub — to be implemented via UserProvider in a future commit
-        return null;
+        return $this->provider?->retrieveById($id);
     }
 
-    /**
-     * Retrieve a user by credentials (e.g. email).
-     * Override in your application by binding a UserProvider.
-     */
     protected function retrieveByCredentials(array $credentials): mixed
     {
-        // Stub — to be implemented via UserProvider in a future commit
-        return null;
+        return $this->provider?->retrieveByCredentials($credentials);
     }
 }

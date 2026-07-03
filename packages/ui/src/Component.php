@@ -5,37 +5,15 @@ namespace Kyqo\UI;
 /**
  * Kyqo UI Component Base
  *
- * The foundation of Kyqo's component system.
- * Inspired by React's functional components, Vue's SFCs,
- * and Angular's component class structure.
- *
- * Every Kyqo UI component extends this base class.
+ * SEC-V4-3 FIX: classString() and attributeString() now escape all
+ * user-controlled values with htmlspecialchars() to prevent XSS.
  */
 abstract class Component
 {
-    /**
-     * Component props (input data from parent).
-     */
-    protected array $props = [];
-
-    /**
-     * Component local state.
-     */
-    protected array $state = [];
-
-    /**
-     * Slots defined in this component.
-     */
-    protected array $slots = [];
-
-    /**
-     * CSS classes to apply to root element.
-     */
-    protected array $classes = [];
-
-    /**
-     * HTML attributes to apply to root element.
-     */
+    protected array $props      = [];
+    protected array $state      = [];
+    protected array $slots      = [];
+    protected array $classes    = [];
     protected array $attributes = [];
 
     public function __construct(array $props = [], array $slots = [])
@@ -45,64 +23,36 @@ abstract class Component
         $this->setup();
     }
 
-    /**
-     * Component setup — called on instantiation.
-     * Override to initialize state, computed values, etc.
-     */
-    protected function setup(): void
-    {
-        //
-    }
+    protected function setup(): void {}
 
-    /**
-     * Render the component — must return HTML string.
-     */
     abstract public function render(): string;
 
-    /**
-     * Get a prop value.
-     */
     public function prop(string $key, mixed $default = null): mixed
     {
         return $this->props[$key] ?? $default;
     }
 
-    /**
-     * Get a slot.
-     */
     public function slot(string $name = 'default', string $fallback = ''): string
     {
         return $this->slots[$name] ?? $fallback;
     }
 
-    /**
-     * Get local state.
-     */
     public function state(string $key, mixed $default = null): mixed
     {
         return $this->state[$key] ?? $default;
     }
 
-    /**
-     * Update local state.
-     */
     public function setState(string $key, mixed $value): void
     {
         $this->state[$key] = $value;
     }
 
-    /**
-     * Add a CSS class.
-     */
     public function addClass(string ...$classes): static
     {
         $this->classes = array_merge($this->classes, $classes);
         return $this;
     }
 
-    /**
-     * Set an HTML attribute.
-     */
     public function setAttribute(string $key, string $value): static
     {
         $this->attributes[$key] = $value;
@@ -110,28 +60,35 @@ abstract class Component
     }
 
     /**
-     * Render class attribute string.
+     * SEC-V4-3 FIX: Each class is escaped before output.
+     * Prevents XSS if a class was derived from user input.
      */
     protected function classString(): string
     {
-        return empty($this->classes) ? '' : ' class="'.implode(' ', $this->classes).'"';
+        if (empty($this->classes)) {
+            return '';
+        }
+        $escaped = array_map(
+            fn (string $c) => htmlspecialchars($c, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
+            $this->classes
+        );
+        return ' class="' . implode(' ', $escaped) . '"';
     }
 
     /**
-     * Render attribute string.
+     * SEC-V4-3 FIX: Both attribute keys and values are escaped.
      */
     protected function attributeString(): string
     {
         $parts = [];
         foreach ($this->attributes as $key => $value) {
-            $parts[] = htmlspecialchars($key).'="'.htmlspecialchars($value).'"';
+            $safeKey   = htmlspecialchars((string) $key,   ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $safeValue = htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $parts[]   = $safeKey . '="' . $safeValue . '"';
         }
-        return empty($parts) ? '' : ' '.implode(' ', $parts);
+        return empty($parts) ? '' : ' ' . implode(' ', $parts);
     }
 
-    /**
-     * Cast the component to string — triggers render.
-     */
     public function __toString(): string
     {
         return $this->render();
