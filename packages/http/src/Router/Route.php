@@ -8,8 +8,15 @@ use Kyqo\Core\Application;
 /**
  * Represents a single registered route.
  *
- * FIX BUG-NEW-3: Controllers are resolved through Application::getInstance()
- *               (the fully bootstrapped app container), NOT bare Container::getInstance().
+ * FIX minor-1: resolveController() no longer swallows DI failures silently.
+ * Previously a bare `catch (\Throwable)` would fall back to `new $class()`
+ * for ANY error — including misconfigured services — making bugs invisible.
+ *
+ * New behaviour:
+ *   - If the app is not yet bootstrapped (getInstance() returns a plain
+ *     Container with no bindings), fall back to direct instantiation as before.
+ *   - If the app IS bootstrapped but make() throws, re-throw immediately so
+ *     the Kernel's exception handler can surface the real error.
  */
 class Route
 {
@@ -39,7 +46,6 @@ class Route
 
     /**
      * Assign a name and register it in the parent Router.
-     * MINOR FIX: namedRoutes was never populated before.
      */
     public function name(string $name): static
     {
@@ -78,7 +84,6 @@ class Route
 
     /**
      * Run the route action.
-     * FIX BUG-NEW-3: Uses Application singleton (the real bootstrapped container).
      */
     public function run(): mixed
     {
@@ -103,14 +108,26 @@ class Route
     }
 
     /**
-     * Resolve controller via Application (fully bootstrapped container).
-     * Falls back to direct instantiation only if app is not booted yet.
+     * FIX minor-1: Distinguish between "app not yet bootstrapped" (safe fallback)
+     * and "app bootstrapped but make() failed" (real error, must propagate).
+     *
+     * The heuristic: if the singleton instance is an Application (i.e. the full
+     * bootstrap has run), we trust the container and let any exception bubble up.
+     * If it is a bare Container (unit-test or early CLI context), we fall back to
+     * direct instantiation — same as before, but only in that safe scenario.
      */
     protected function resolveController(string $class): object
     {
+        $instance = Application::getInstance();
+
+        if ($instance instanceof Application) {
+            // Fully bootstrapped — propagate DI errors instead of hiding them.
+            return $instance->make($class);
+        }
+
+        // Bare container (pre-bootstrap / tests) — direct instantiation fallback.
         try {
-            $app = Application::getInstance();
-            return $app->make($class);
+            return $instance->make($class);
         } catch (\Throwable) {
             return new $class();
         }

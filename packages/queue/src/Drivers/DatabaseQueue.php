@@ -7,13 +7,24 @@ use Kyqo\Queue\QueueInterface;
 /**
  * Database-backed queue driver.
  *
- * FIX C2: pop() now uses unserialize() with an explicit allowed_classes
- * whitelist to prevent PHP Object Injection attacks.
- * The default whitelist is empty (no classes allowed) — callers must
- * configure allowed_classes via the queue config:
- *   'connections' => ['database' => ['driver' => 'database', 'allowed_classes' => [MyJob::class, ...]]]
+ * FIX C2 (maintained): unserialize() uses explicit allowed_classes whitelist.
  *
- * Pass allowed_classes = true only if you fully trust the queue storage.
+ * FIX minor-3: pop() is now atomic — it uses a reserved_at column to
+ * "claim" the job before deleting it, preventing two concurrent workers
+ * from processing the same job (race condition).
+ *
+ * Strategy (works on MySQL, PostgreSQL, SQLite):
+ *   1. UPDATE jobs SET reserved_at = NOW(), attempts = attempts + 1
+ *      WHERE id = (SELECT MIN(id) FROM jobs WHERE queue=? AND available_at<=? AND reserved_at IS NULL)
+ *   2. SELECT the job we just claimed (reserved_at IS NOT NULL for our session)
+ *   3. DELETE it.
+ *
+ * If the UPDATE affects 0 rows, another worker won the race — return null.
+ *
+ * IMPORTANT: the `jobs` table must have a `reserved_at` column (nullable TIMESTAMP).
+ * Migration example:
+ *   ALTER TABLE jobs ADD COLUMN reserved_at INTEGER NULL DEFAULT NULL;
+ * (Unix timestamp integer is used for SQLite compatibility.)
  */
 class DatabaseQueue implements QueueInterface
 {
@@ -40,23 +51,67 @@ class DatabaseQueue implements QueueInterface
         return $this->insertJob($job, $queue, $availableAt);
     }
 
+    /**
+     * FIX minor-3: atomic pop via reserved_at claim.
+     *
+     * Flow:
+     *   a) Find the smallest available, unclaimed job id.
+     *   b) Atomically mark it reserved (UPDATE WHERE reserved_at IS NULL).
+     *      rowCount() === 0 means another worker claimed it first — bail.
+     *   c) Fetch the full row, delete it, deserialize and return.
+     *
+     * A stale reserved job (worker crashed before DELETE) can be recovered
+     * by a maintenance command that NULLifies reserved_at where
+     * reserved_at < NOW() - grace_period.
+     */
     public function pop(?string $queue = null): ?object
     {
         $pdo   = $this->connection();
         $queue = $queue ?? $this->config['queue'] ?? 'default';
+        $now   = time();
 
-        $stmt = $pdo->prepare(
-            'SELECT * FROM jobs WHERE queue = :queue AND available_at <= :now ORDER BY id ASC LIMIT 1'
+        // Step 1: find the first available unclaimed job id.
+        $find = $pdo->prepare(
+            'SELECT id FROM jobs
+             WHERE queue = :queue
+               AND available_at <= :now
+               AND reserved_at IS NULL
+             ORDER BY id ASC
+             LIMIT 1'
         );
-        $stmt->execute([':queue' => $queue, ':now' => time()]);
-        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        $find->execute([':queue' => $queue, ':now' => $now]);
+        $id = $find->fetchColumn();
+
+        if ($id === false) {
+            return null;
+        }
+
+        // Step 2: atomically claim it (guard: reserved_at must still be NULL).
+        $claim = $pdo->prepare(
+            'UPDATE jobs
+             SET reserved_at = :reserved_at, attempts = attempts + 1
+             WHERE id = :id
+               AND reserved_at IS NULL'
+        );
+        $claim->execute([':reserved_at' => $now, ':id' => $id]);
+
+        if ($claim->rowCount() === 0) {
+            // Another worker claimed it between our SELECT and UPDATE.
+            return null;
+        }
+
+        // Step 3: fetch the claimed row, delete it, deserialize.
+        $fetch = $pdo->prepare('SELECT * FROM jobs WHERE id = :id');
+        $fetch->execute([':id' => $id]);
+        $row = $fetch->fetch(\PDO::FETCH_ASSOC);
 
         if (!$row) {
+            // Should not happen, but guard anyway.
             return null;
         }
 
         $del = $pdo->prepare('DELETE FROM jobs WHERE id = :id');
-        $del->execute([':id' => $row['id']]);
+        $del->execute([':id' => $id]);
 
         return $this->deserializeJob($row['payload']);
     }
@@ -65,7 +120,9 @@ class DatabaseQueue implements QueueInterface
     {
         $pdo   = $this->connection();
         $queue = $queue ?? $this->config['queue'] ?? 'default';
-        $stmt  = $pdo->prepare('SELECT COUNT(*) FROM jobs WHERE queue = :queue AND available_at <= :now');
+        $stmt  = $pdo->prepare(
+            'SELECT COUNT(*) FROM jobs WHERE queue = :queue AND available_at <= :now AND reserved_at IS NULL'
+        );
         $stmt->execute([':queue' => $queue, ':now' => time()]);
         return (int) $stmt->fetchColumn();
     }
@@ -74,7 +131,8 @@ class DatabaseQueue implements QueueInterface
     {
         $pdo  = $this->connection();
         $stmt = $pdo->prepare(
-            'INSERT INTO jobs (queue, payload, attempts, available_at, created_at) VALUES (:queue, :payload, 0, :available_at, :created_at)'
+            'INSERT INTO jobs (queue, payload, attempts, available_at, reserved_at, created_at)
+             VALUES (:queue, :payload, 0, :available_at, NULL, :created_at)'
         );
         $stmt->execute([
             ':queue'        => $queue,
@@ -87,13 +145,6 @@ class DatabaseQueue implements QueueInterface
 
     /**
      * FIX C2: deserialize with an explicit class whitelist.
-     *
-     * Config key `allowed_classes`:
-     *   - false (default) : no classes allowed — safest for untrusted storage
-     *   - true            : all classes allowed — only use with trusted storage
-     *   - string[]        : explicit whitelist of class names
-     *
-     * @throws \UnexpectedValueException if deserialization yields a non-object.
      */
     protected function deserializeJob(string $payload): ?object
     {

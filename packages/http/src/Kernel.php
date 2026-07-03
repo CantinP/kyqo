@@ -75,9 +75,8 @@ class Kernel
     }
 
     /**
-     * FIX M1: rotate the CSRF token only when the current path is NOT in
-     * the except list. API/webhook routes share the same session but must
-     * not rotate the token used by the browser tab running in parallel.
+     * FIX M1 (maintained): rotate the CSRF token only when the current path
+     * is NOT in the except list.
      */
     public function terminate(Request $request, Response $response): void
     {
@@ -85,10 +84,9 @@ class Kernel
             return;
         }
 
-        $csrfMiddleware = new VerifyCsrfToken();
-        $path           = ltrim($request->path(), '/');
-
+        $path       = ltrim($request->path(), '/');
         $isExcluded = false;
+
         foreach ($this->getCsrfExceptPatterns() as $pattern) {
             if (fnmatch($pattern, $path)) {
                 $isExcluded = true;
@@ -131,15 +129,35 @@ class Kernel
         return Response::make($html, $status, ['Content-Type' => 'text/html; charset=UTF-8']);
     }
 
+    /**
+     * FIX minor-2: throw an explicit InvalidArgumentException when an alias
+     * is not registered, instead of silently returning the raw alias string
+     * and letting Pipeline fail later with a cryptic class-not-found error.
+     *
+     * A FQCN that is not in routeMiddleware (i.e. it IS the real class name)
+     * is still accepted — the check is: if the value looks like a short alias
+     * (no backslash) and is not in the map, raise immediately.
+     */
     public function resolveMiddleware(string $alias): string
     {
-        return $this->routeMiddleware[$alias] ?? $alias;
+        if (isset($this->routeMiddleware[$alias])) {
+            return $this->routeMiddleware[$alias];
+        }
+
+        // If the string contains a backslash it is already a FQCN — pass through.
+        if (str_contains($alias, '\\')) {
+            return $alias;
+        }
+
+        // Short alias not found in the map.
+        throw new \InvalidArgumentException(
+            "Middleware alias [{$alias}] is not registered in the Kernel. "
+            . 'Available aliases: ' . implode(', ', array_keys($this->routeMiddleware)) . '.'
+        );
     }
 
     /**
-     * Return the CSRF except patterns from the middleware instance.
-     * Centralises the pattern list so Kernel::terminate() and
-     * VerifyCsrfToken::inExceptArray() always use the same set.
+     * Return the CSRF except patterns.
      */
     protected function getCsrfExceptPatterns(): array
     {
