@@ -5,87 +5,136 @@ namespace Kyqo\Http;
 /**
  * Kyqo HTTP Response
  *
- * Represents and sends an HTTP response including status, headers and body.
+ * Represents and sends an outgoing HTTP response.
+ * Supports status codes, headers, and body content.
+ *
+ * SECURITY: setHeader() strips newlines from header values to prevent
+ * HTTP response splitting (CRLF injection).
  */
 class Response
 {
-    protected mixed $content;
     protected int $status;
     protected array $headers;
+    protected string $body;
 
-    protected static array $statusTexts = [
-        200 => 'OK', 201 => 'Created', 204 => 'No Content',
-        301 => 'Moved Permanently', 302 => 'Found',
-        400 => 'Bad Request', 401 => 'Unauthorized', 403 => 'Forbidden',
-        404 => 'Not Found', 405 => 'Method Not Allowed', 422 => 'Unprocessable Entity',
-        429 => 'Too Many Requests', 500 => 'Internal Server Error',
-    ];
-
-    public function __construct(mixed $content = '', int $status = 200, array $headers = [])
+    public function __construct(string $body = '', int $status = 200, array $headers = [])
     {
-        $this->content = $content;
+        $this->body    = $body;
         $this->status  = $status;
-        $this->headers = array_merge(['Content-Type' => 'text/html; charset=UTF-8'], $headers);
+        $this->headers = [];
+
+        // Use setHeader to sanitize all initial headers
+        foreach ($headers as $key => $value) {
+            $this->setHeader($key, $value);
+        }
     }
 
-    public static function make(mixed $content = '', int $status = 200, array $headers = []): static
+    /**
+     * Create a new response instance.
+     */
+    public static function make(string $body = '', int $status = 200, array $headers = []): static
     {
-        return new static($content, $status, $headers);
+        return new static($body, $status, $headers);
     }
 
+    /**
+     * Create a JSON response.
+     */
     public static function json(mixed $data, int $status = 200, array $headers = []): static
     {
         $headers['Content-Type'] = 'application/json';
-        return new static(json_encode($data), $status, $headers);
+        return new static(
+            json_encode($data, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+            $status,
+            $headers
+        );
     }
 
+    /**
+     * Create a redirect response.
+     */
     public static function redirect(string $url, int $status = 302): static
     {
-        return new static('', $status, ['Location' => $url]);
+        // Sanitize redirect URL to prevent open redirect via javascript: or data: URIs
+        $safeUrl = self::sanitizeRedirectUrl($url);
+        return new static('', $status, ['Location' => $safeUrl]);
     }
 
-    public function setContent(mixed $content): static
-    {
-        $this->content = $content;
-        return $this;
-    }
-
-    public function setStatus(int $status): static
-    {
-        $this->status = $status;
-        return $this;
-    }
-
+    /**
+     * Set a response header.
+     * SECURITY: Strips CR/LF characters to prevent HTTP Response Splitting.
+     */
     public function setHeader(string $key, string $value): static
     {
-        $this->headers[$key] = $value;
-        return $this;
-    }
+        // Strip CRLF injection
+        $key   = preg_replace('/[\r\n]+/', '', $key);
+        $value = preg_replace('/[\r\n]+/', '', $value);
 
-    public function withHeaders(array $headers): static
-    {
-        foreach ($headers as $key => $value) {
+        if ($key !== '') {
             $this->headers[$key] = $value;
         }
+
         return $this;
     }
 
-    public function getContent(): mixed  { return $this->content; }
-    public function getStatus(): int     { return $this->status; }
-    public function getHeaders(): array  { return $this->headers; }
+    public function getHeader(string $key, ?string $default = null): ?string
+    {
+        return $this->headers[$key] ?? $default;
+    }
+
+    public function withStatus(int $status): static
+    {
+        $clone = clone $this;
+        $clone->status = $status;
+        return $clone;
+    }
+
+    public function status(): int
+    {
+        return $this->status;
+    }
+
+    public function body(): string
+    {
+        return $this->body;
+    }
+
+    public function headers(): array
+    {
+        return $this->headers;
+    }
 
     /**
      * Send the response to the client.
      */
     public function send(): void
     {
-        $statusText = static::$statusTexts[$this->status] ?? 'Unknown';
-        header("HTTP/1.1 {$this->status} {$statusText}", true, $this->status);
-
-        foreach ($this->headers as $name => $value) {
-            header("{$name}: {$value}", true);
+        if (!headers_sent()) {
+            http_response_code($this->status);
+            foreach ($this->headers as $key => $value) {
+                header("{$key}: {$value}", true);
+            }
+            // Always remove X-Powered-By at the PHP level too
+            header_remove('X-Powered-By');
         }
 
-        echo $this->content;
+        echo $this->body;
+    }
+
+    /**
+     * SECURITY: Prevent open redirect to javascript:, data:, or protocol-less URIs.
+     */
+    protected static function sanitizeRedirectUrl(string $url): string
+    {
+        $stripped = ltrim($url);
+        // Block javascript:, data:, vbscript: and similar dangerous schemes
+        if (preg_match('/^(javascript|data|vbscript|file):/i', $stripped)) {
+            return '/';
+        }
+        // Allow only http, https, or relative URLs
+        if (!str_starts_with($stripped, '/') && !preg_match('/^https?:\/\//i', $stripped)) {
+            return '/';
+        }
+        return $url;
     }
 }
