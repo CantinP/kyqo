@@ -7,11 +7,13 @@ use Kyqo\Queue\QueueInterface;
 /**
  * Database-backed queue driver.
  *
- * Jobs are serialized and stored in a `jobs` table.
- * This is a concrete stub — full implementation requires a DB connection.
+ * FIX C2: pop() now uses unserialize() with an explicit allowed_classes
+ * whitelist to prevent PHP Object Injection attacks.
+ * The default whitelist is empty (no classes allowed) — callers must
+ * configure allowed_classes via the queue config:
+ *   'connections' => ['database' => ['driver' => 'database', 'allowed_classes' => [MyJob::class, ...]]]
  *
- * Schema expected:
- *   id, queue, payload (TEXT), attempts, available_at, created_at
+ * Pass allowed_classes = true only if you fully trust the queue storage.
  */
 class DatabaseQueue implements QueueInterface
 {
@@ -56,8 +58,7 @@ class DatabaseQueue implements QueueInterface
         $del = $pdo->prepare('DELETE FROM jobs WHERE id = :id');
         $del->execute([':id' => $row['id']]);
 
-        $job = @unserialize($row['payload']);
-        return is_object($job) ? $job : null;
+        return $this->deserializeJob($row['payload']);
     }
 
     public function size(?string $queue = null): int
@@ -82,6 +83,36 @@ class DatabaseQueue implements QueueInterface
             ':created_at'   => time(),
         ]);
         return $pdo->lastInsertId();
+    }
+
+    /**
+     * FIX C2: deserialize with an explicit class whitelist.
+     *
+     * Config key `allowed_classes`:
+     *   - false (default) : no classes allowed — safest for untrusted storage
+     *   - true            : all classes allowed — only use with trusted storage
+     *   - string[]        : explicit whitelist of class names
+     *
+     * @throws \UnexpectedValueException if deserialization yields a non-object.
+     */
+    protected function deserializeJob(string $payload): ?object
+    {
+        $allowedClasses = $this->config['allowed_classes'] ?? false;
+
+        $job = unserialize($payload, ['allowed_classes' => $allowedClasses]);
+
+        if ($job === false) {
+            return null;
+        }
+
+        if (!is_object($job)) {
+            throw new \UnexpectedValueException(
+                'Deserialized queue payload is not an object. ' .
+                'Set allowed_classes in queue config to enable class deserialization.'
+            );
+        }
+
+        return $job;
     }
 
     protected function connection(): \PDO

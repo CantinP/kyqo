@@ -7,9 +7,11 @@ use Kyqo\Cache\StoreInterface;
 /**
  * File-based cache store.
  *
- * Each entry is stored as a JSON file under $basePath.
- * Files are protected with 0600 permissions.
- * Read+write uses flock(LOCK_EX) to prevent race conditions.
+ * FIX m1: has() now correctly returns true even when the stored value is null.
+ * The old implementation used `$this->get($key) !== null`, which incorrectly
+ * returned false for legitimately cached null values.
+ * The new implementation checks file existence and TTL directly,
+ * mirroring the same logic as get() but without returning the value.
  */
 class FileStore implements StoreInterface
 {
@@ -61,7 +63,6 @@ class FileStore implements StoreInterface
             'expires_at' => $ttl > 0 ? time() + $ttl : 0,
         ], JSON_THROW_ON_ERROR);
 
-        // SEC: set restrictive umask before creating the file
         $oldUmask = umask(0077);
         $fh = fopen($file, 'c+');
         umask($oldUmask);
@@ -88,9 +89,39 @@ class FileStore implements StoreInterface
         return file_exists($file) ? (bool) @unlink($file) : true;
     }
 
+    /**
+     * FIX m1: check key existence by reading the file metadata directly,
+     * not by comparing the stored value to null.
+     */
     public function has(string $key): bool
     {
-        return $this->get($key) !== null;
+        $file = $this->path($key);
+        if (!file_exists($file)) {
+            return false;
+        }
+
+        $fh = fopen($file, 'r');
+        if ($fh === false) {
+            return false;
+        }
+
+        flock($fh, LOCK_SH);
+        $raw = stream_get_contents($fh);
+        flock($fh, LOCK_UN);
+        fclose($fh);
+
+        $data = json_decode((string) $raw, true);
+        if (!is_array($data)) {
+            return false;
+        }
+
+        if ($data['expires_at'] !== 0 && $data['expires_at'] <= time()) {
+            @unlink($file);
+            return false;
+        }
+
+        // Key exists and has not expired — value may legitimately be null
+        return true;
     }
 
     public function flush(): bool

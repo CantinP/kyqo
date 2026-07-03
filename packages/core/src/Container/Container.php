@@ -4,6 +4,7 @@ namespace Kyqo\Core\Container;
 
 use Closure;
 use ReflectionClass;
+use ReflectionFunction;
 use ReflectionMethod;
 use Kyqo\Core\Contracts\Container as ContainerContract;
 use Kyqo\Core\Exceptions\ContainerException;
@@ -96,32 +97,52 @@ class Container implements ContainerContract
     }
 
     /**
-     * Call a callable, injecting dependencies for any typed parameters.
+     * Call a callable, injecting dependencies for typed parameters.
      *
-     * BUG-V4-2 FIX: Container::call() was referenced in QueueManager::dispatch()
-     * but never existed. This method resolves type-hinted parameters via make()
-     * and merges any supplied primitives.
+     * FIX C1: properly distinguishes:
+     *   - [object, method]   → ReflectionMethod::invokeArgs($object, $args)
+     *   - 'Class::method'    → detect static vs instance; throw for non-static without object
+     *   - Closure / callable → ReflectionFunction::invokeArgs($args)
      *
      * @param callable|array $callable  Any PHP callable.
      * @param array          $primitives Named overrides for primitive parameters.
      */
     public function call(callable|array $callable, array $primitives = []): mixed
     {
+        // [object|string, method]
         if (is_array($callable)) {
-            [$object, $method] = $callable;
-            $reflection = new ReflectionMethod($object, $method);
+            [$objectOrClass, $method] = $callable;
+            $reflection   = new ReflectionMethod($objectOrClass, $method);
             $dependencies = $this->resolveDependencies($reflection->getParameters(), $primitives);
+
+            if ($reflection->isStatic()) {
+                return $reflection->invokeArgs(null, $dependencies);
+            }
+
+            $object = is_object($objectOrClass)
+                ? $objectOrClass
+                : $this->make($objectOrClass);
+
             return $reflection->invokeArgs($object, $dependencies);
         }
 
+        // 'Class::method' string
         if (is_string($callable) && str_contains($callable, '::')) {
             [$class, $method] = explode('::', $callable, 2);
-            $reflection = new ReflectionMethod($class, $method);
+            $reflection   = new ReflectionMethod($class, $method);
             $dependencies = $this->resolveDependencies($reflection->getParameters(), $primitives);
-            return $reflection->invokeArgs(null, $dependencies);
+
+            if ($reflection->isStatic()) {
+                return $reflection->invokeArgs(null, $dependencies);
+            }
+
+            // Non-static: resolve the class from the container
+            $object = $this->make($class);
+            return $reflection->invokeArgs($object, $dependencies);
         }
 
-        $reflection   = new \ReflectionFunction(\Closure::fromCallable($callable));
+        // Closure or any other callable
+        $reflection   = new ReflectionFunction(Closure::fromCallable($callable));
         $dependencies = $this->resolveDependencies($reflection->getParameters(), $primitives);
         return $reflection->invokeArgs($dependencies);
     }

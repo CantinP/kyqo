@@ -9,10 +9,9 @@ use Kyqo\Core\Events\Dispatcher;
 /**
  * The Kyqo Application.
  *
- * FIX #7: Session\ Store binding is wrapped so that it only starts the
- * session if bootstrap/app.php has not already done so (PHP_SESSION_ACTIVE).
- * This prevents double session_start() in tests or CLI contexts where the
- * secure cookie params set in bootstrap are absent.
+ * FIX M1: Router is now registered as a singleton so that UrlGenerator
+ * and Kernel can always resolve it from the container. If a custom Router
+ * is already bound before bootstrap, the existing binding is preserved.
  */
 class Application extends Container
 {
@@ -122,35 +121,41 @@ class Application extends Container
         $this->instance(Dispatcher::class, $dispatcher);
         $this->instance('events', $dispatcher);
 
-        // 3. Database
+        // 3. Router — FIX M1: bind before UrlGenerator so make(Router::class) never fails
+        $this->singleton('router', function () {
+            return new \Kyqo\Http\Router\Router();
+        });
+        $this->singleton(\Kyqo\Http\Router\Router::class, fn () => $this->make('router'));
+
+        // 4. Database
         $dbConfig = $config->get('database', []);
         $this->singleton('db', function () use ($dbConfig) {
             return new \Kyqo\Database\DatabaseManager($dbConfig);
         });
         $this->singleton(\Kyqo\Database\DatabaseManager::class, fn () => $this->make('db'));
 
-        // 4. Auth
+        // 5. Auth
         $authConfig = $config->get('auth', []);
         $this->singleton('auth', function () use ($authConfig) {
             return new \Kyqo\Auth\AuthManager($authConfig);
         });
         $this->singleton(\Kyqo\Auth\AuthManager::class, fn () => $this->make('auth'));
 
-        // 5. Cache
+        // 6. Cache
         $cacheConfig = $config->get('cache', []);
         $this->singleton('cache', function () use ($cacheConfig) {
             return new \Kyqo\Cache\CacheManager($cacheConfig);
         });
         $this->singleton(\Kyqo\Cache\CacheManager::class, fn () => $this->make('cache'));
 
-        // 6. Queue
+        // 7. Queue
         $queueConfig = $config->get('queue', []);
         $this->singleton('queue', function () use ($queueConfig) {
             return new \Kyqo\Queue\QueueManager($queueConfig);
         });
         $this->singleton(\Kyqo\Queue\QueueManager::class, fn () => $this->make('queue'));
 
-        // 7. View Engine
+        // 8. View Engine
         $this->singleton('view', function () use ($config) {
             $paths    = (array)  ($config->get('view.paths')    ?? []);
             $compiled = (string) ($config->get('view.compiled') ?? sys_get_temp_dir() . '/kyqo_views');
@@ -159,22 +164,19 @@ class Application extends Container
         });
         $this->singleton(\Kyqo\View\Engine::class, fn () => $this->make('view'));
 
-        // 8. Request
+        // 9. Request
         $this->singleton('request', function () {
             return \Kyqo\Http\Request::capture();
         });
         $this->singleton(\Kyqo\Http\Request::class, fn () => $this->make('request'));
 
-        // 9. Session store
-        // FIX #7: only start the session if it is not already active.
-        // bootstrap/app.php starts it first with secure cookie params;
-        // in that case Session\Store must NOT call session_start() again.
+        // 10. Session store
         $this->singleton('session', function () {
             return new \Kyqo\Http\Session\Store();
         });
         $this->singleton(\Kyqo\Http\Session\Store::class, fn () => $this->make('session'));
 
-        // 10. URL Generator
+        // 11. URL Generator
         $this->singleton('url', function () {
             return new \Kyqo\Http\UrlGenerator(
                 $this->make(\Kyqo\Http\Router\Router::class),
@@ -187,16 +189,17 @@ class Application extends Container
     protected function registerCoreAliases(): void
     {
         $aliases = [
-            ConfigRepository::class                   => 'config',
-            Dispatcher::class                         => 'events',
-            \Kyqo\Database\DatabaseManager::class    => 'db',
-            \Kyqo\Auth\AuthManager::class             => 'auth',
-            \Kyqo\Cache\CacheManager::class           => 'cache',
-            \Kyqo\Queue\QueueManager::class           => 'queue',
-            \Kyqo\View\Engine::class                  => 'view',
-            \Kyqo\Http\Request::class                 => 'request',
-            \Kyqo\Http\Session\Store::class           => 'session',
-            \Kyqo\Http\UrlGenerator::class            => 'url',
+            ConfigRepository::class                    => 'config',
+            Dispatcher::class                          => 'events',
+            \Kyqo\Http\Router\Router::class            => 'router',
+            \Kyqo\Database\DatabaseManager::class     => 'db',
+            \Kyqo\Auth\AuthManager::class              => 'auth',
+            \Kyqo\Cache\CacheManager::class            => 'cache',
+            \Kyqo\Queue\QueueManager::class            => 'queue',
+            \Kyqo\View\Engine::class                   => 'view',
+            \Kyqo\Http\Request::class                  => 'request',
+            \Kyqo\Http\Session\Store::class            => 'session',
+            \Kyqo\Http\UrlGenerator::class             => 'url',
         ];
 
         foreach ($aliases as $abstract => $shortKey) {

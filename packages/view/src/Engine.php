@@ -19,13 +19,6 @@ class Engine
         $this->cache        = $cache;
     }
 
-    /**
-     * Render a template.
-     *
-     * MINOR FIX: Template is rendered in an isolated closure scope so that
-     *            variables named $path, $content, $layout, etc. in $data
-     *            do not clobber Engine internals.
-     */
     public function make(string $template, array $data = []): string
     {
         $path    = $this->findTemplate($template);
@@ -44,21 +37,30 @@ class Engine
     }
 
     /**
-     * Render a PHP file in an isolated scope.
-     * MINOR FIX: 'extract' runs inside a static closure — engine properties
-     *            ($this->sections, $this->layout, etc.) are inaccessible
-     *            from within the template, preventing variable collisions.
+     * FIX m2: ob_get_clean() can return false if the output buffer stack
+     * is unexpectedly empty. Now throws a RuntimeException instead of
+     * silently returning an empty string.
      */
     protected function renderFile(string $____path, array $____data): string
     {
-        $____engine = $this;   // expose $engine to templates if needed
+        $____engine = $this;
 
         ob_start();
         (static function () use ($____path, $____data, $____engine) {
             extract($____data, EXTR_SKIP);
             include $____path;
         })();
-        return (string) ob_get_clean();
+
+        $output = ob_get_clean();
+
+        if ($output === false) {
+            throw new \RuntimeException(
+                "Failed to capture output buffer while rendering [{$____path}]. " .
+                'Output buffer stack may have been corrupted by the template.'
+            );
+        }
+
+        return $output;
     }
 
     public function e(mixed $value): string
@@ -89,7 +91,7 @@ class Engine
         if ($name !== null) {
             $this->sections[$name] = (string) ob_get_clean();
         } else {
-            ob_end_clean(); // unmatched endSection — discard
+            ob_end_clean();
         }
     }
 

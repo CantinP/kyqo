@@ -5,8 +5,10 @@ namespace Kyqo\Queue;
 /**
  * Kyqo Queue Manager
  *
- * BUG-V4-2: dispatch() no longer calls app()->call() which didn't exist.
- * Jobs are now executed via SyncQueue::execute() pattern or direct handle().
+ * FIX M3: dispatch() no longer swallows exceptions with a silent fallback.
+ * If Container::make() fails to inject a dependency, the exception propagates
+ * so the developer can see the real error instead of a silent no-op.
+ * The zero-argument fallback is removed entirely.
  */
 class QueueManager
 {
@@ -40,37 +42,43 @@ class QueueManager
     }
 
     /**
-     * Dispatch a job immediately, resolving its handle() method directly.
+     * Dispatch a job immediately by resolving its handle() dependencies via the container.
      *
-     * BUG-V4-2 FIX: Removed app()->call() (method did not exist on Container).
-     * Dependencies are injected via Container::make() on each parameter type.
+     * FIX M3: exceptions from dependency resolution now propagate.
+     * The previous silent catch (which called handle() with no args as fallback)
+     * masked real container/DI errors and made debugging impossible.
+     *
+     * @throws \BadMethodCallException if the job has no handle() method.
      */
     public function dispatch(object $job): mixed
     {
         if (!method_exists($job, 'handle')) {
-            return null;
+            throw new \BadMethodCallException(
+                get_class($job) . '::handle() does not exist.'
+            );
         }
 
-        try {
-            $app    = \Kyqo\Core\Application::getInstance();
-            $method = new \ReflectionMethod($job, 'handle');
-            $params = $method->getParameters();
-            $args   = [];
-            foreach ($params as $param) {
-                $type = $param->getType();
-                if ($type && !$type->isBuiltin()) {
-                    $args[] = $app->make($type->getName());
-                } elseif ($param->isDefaultValueAvailable()) {
-                    $args[] = $param->getDefaultValue();
-                } else {
-                    $args[] = null;
-                }
+        $app    = \Kyqo\Core\Application::getInstance();
+        $method = new \ReflectionMethod($job, 'handle');
+        $params = $method->getParameters();
+        $args   = [];
+
+        foreach ($params as $param) {
+            $type = $param->getType();
+            if ($type && !$type->isBuiltin()) {
+                // Throws if the service is not bound — surfaces the real error
+                $args[] = $app->make($type->getName());
+            } elseif ($param->isDefaultValueAvailable()) {
+                $args[] = $param->getDefaultValue();
+            } else {
+                throw new \RuntimeException(
+                    'Cannot resolve primitive parameter $' . $param->getName()
+                    . ' for ' . get_class($job) . '::handle()'
+                );
             }
-            return $job->handle(...$args);
-        } catch (\Throwable) {
-            // Fallback: call with no arguments
-            return $job->handle();
         }
+
+        return $job->handle(...$args);
     }
 
     protected function resolve(string $name): QueueInterface
