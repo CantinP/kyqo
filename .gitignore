@@ -1,0 +1,35 @@
+# Dependencies
+/vendor
+/node_modules
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Compiled assets
+/public/build
+/public/hot
+
+# Storage
+/storage/app/public
+/storage/logs
+/storage/framework/cache
+/storage/framework/sessions
+/storage/framework/views
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.lock
+!composer.lock
+!package-lock.json
+*.log

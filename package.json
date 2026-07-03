@@ -1,0 +1,30 @@
+{
+    "name": "kyqo",
+    "version": "0.1.0",
+    "description": "Kyqo — A powerful full-stack framework for PHP and JavaScript/TypeScript developers",
+    "private": true,
+    "workspaces": [
+        "packages/ui",
+        "packages/cli",
+        "packages/realtime",
+        "resources"
+    ],
+    "scripts": {
+        "dev": "node kyqo.js serve",
+        "build": "node kyqo.js build",
+        "test": "vitest",
+        "lint": "eslint .",
+        "format": "prettier --write ."
+    },
+    "devDependencies": {
+        "typescript": "^5.5",
+        "vite": "^5.0",
+        "vitest": "^2.0",
+        "eslint": "^9.0",
+        "prettier": "^3.0",
+        "@types/node": "^22.0"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    }
+}
