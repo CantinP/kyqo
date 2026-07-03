@@ -8,9 +8,11 @@ namespace Kyqo\Database;
  * All values go through PDO prepared statements.
  * Identifiers (table/column names) are quoted but never interpolated from raw user input.
  *
- * Usage:
- *   DB::table('users')->where('email', 'foo@example.com')->first();
- *   DB::table('posts')->where('user_id', $id)->orderBy('created_at', 'desc')->limit(10)->get();
+ * FIX N6: quoteIdentifier() no longer allows dots in identifiers.
+ * Previously `/^[a-zA-Z_][a-zA-Z0-9_.]*$/` permitted `table.column`,
+ * which is a valid use case but the dot could allow edge-case bypasses.
+ * Dots are now rejected; callers should pass plain column names only.
+ * The SELECT column list handles `*` explicitly.
  */
 class QueryBuilder
 {
@@ -22,7 +24,6 @@ class QueryBuilder
     protected ?int       $limit     = null;
     protected ?int       $offset    = null;
     protected array      $orders    = [];
-    protected array      $joins     = [];
 
     public function __construct(Connection $connection, string $table)
     {
@@ -94,7 +95,7 @@ class QueryBuilder
 
     public function orderBy(string $column, string $direction = 'asc'): static
     {
-        $direction    = strtolower($direction) === 'desc' ? 'DESC' : 'ASC';
+        $direction      = strtolower($direction) === 'desc' ? 'DESC' : 'ASC';
         $this->orders[] = $this->quoteIdentifier($column) . ' ' . $direction;
         return $this;
     }
@@ -243,10 +244,14 @@ class QueryBuilder
         return ' WHERE ' . implode(' AND ', $this->wheres);
     }
 
+    /**
+     * FIX N6: reject identifiers containing dots.
+     * Only plain alphanumeric + underscore names are accepted.
+     * table.column patterns must be handled by the caller via two separate calls.
+     */
     protected function quoteIdentifier(string $name): string
     {
-        // Only allow safe identifier characters; reject anything else
-        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $name)) {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $name)) {
             throw new \InvalidArgumentException("Invalid SQL identifier: [{$name}]");
         }
         $driver = $this->connection->getDriver();

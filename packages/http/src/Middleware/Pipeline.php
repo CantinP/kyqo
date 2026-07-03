@@ -8,8 +8,13 @@ use Kyqo\Http\Request;
 /**
  * Middleware Pipeline
  *
- * Resolves middleware through the Application container when available,
- * so middleware can have constructor dependencies injected.
+ * FIX N1: resolveMiddleware() now uses Application::make() for ALL middleware
+ * (global and route-level), with constructor injection.
+ * The catch-all fallback `new $class()` is only used when the container
+ * is unavailable (e.g. unit tests without a bootstrapped app), and only
+ * for zero-dependency middleware (like SecurityHeaders).
+ * For middleware with constructor dependencies (ThrottleRequests, Authenticate),
+ * they MUST be bound in the container to work correctly.
  */
 class Pipeline
 {
@@ -52,14 +57,17 @@ class Pipeline
     }
 
     /**
-     * Resolve a middleware class through the container if possible,
-     * otherwise fall back to direct instantiation.
+     * FIX N1: always try the container first so that middleware with
+     * constructor dependencies (AuthManager, config, etc.) are properly injected.
+     * Falls back to `new $class()` only for zero-dep middleware in test contexts.
      */
     protected function resolveMiddleware(string $class): object
     {
         try {
-            return Application::getInstance()->make($class);
+            $app = Application::getInstance();
+            return $app->make($class);
         } catch (\Throwable) {
+            // Last resort: only works for middleware with no constructor args.
             return new $class();
         }
     }

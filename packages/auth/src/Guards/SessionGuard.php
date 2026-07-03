@@ -4,17 +4,17 @@ namespace Kyqo\Auth\Guards;
 
 use Kyqo\Auth\GuardInterface;
 use Kyqo\Auth\UserProviderInterface;
+use Kyqo\Auth\Providers\DatabaseUserProvider;
 
 /**
  * Session-based authentication guard.
  *
- * MINOR-V4-4: Now accepts an optional UserProviderInterface so that
- * retrieveById() and retrieveByCredentials() are not permanent stubs.
+ * FIX N7: login() now optionally sets a remember-me cookie by storing
+ * a signed token in the `remember_token` column and issuing an HttpOnly
+ * Secure cookie. On subsequent requests, user() will check the cookie
+ * when no session ID is present.
  *
- * SECURITY:
- * - Session is regenerated on login to prevent session fixation.
- * - Password comparison uses password_verify().
- * - User ID stored in session, not the full object.
+ * Remember-me is opt-in via $remember = true in attempt() / login().
  */
 class SessionGuard implements GuardInterface
 {
@@ -23,6 +23,7 @@ class SessionGuard implements GuardInterface
     protected mixed  $user         = null;
     protected bool   $userResolved = false;
     protected string $sessionKey;
+    protected string $cookieName;
     protected ?UserProviderInterface $provider;
 
     public function __construct(
@@ -33,6 +34,7 @@ class SessionGuard implements GuardInterface
         $this->name       = $name;
         $this->config     = $config;
         $this->sessionKey = '_kyqo_auth_' . $name;
+        $this->cookieName = 'remember_' . $name . '_' . md5(static::class);
         $this->provider   = $provider;
     }
 
@@ -42,11 +44,16 @@ class SessionGuard implements GuardInterface
             return $this->user;
         }
         $this->userResolved = true;
+
+        // 1. Session-based lookup
         $id = $this->sessionId();
-        if ($id === null) {
-            return null;
+        if ($id !== null) {
+            $this->user = $this->retrieveById($id);
+            return $this->user;
         }
-        $this->user = $this->retrieveById($id);
+
+        // 2. FIX N7: Remember-me cookie fallback
+        $this->user = $this->recallFromCookie();
         return $this->user;
     }
 
@@ -54,7 +61,7 @@ class SessionGuard implements GuardInterface
 
     public function id(): mixed { return $this->sessionId(); }
 
-    public function attempt(array $credentials): bool
+    public function attempt(array $credentials, bool $remember = false): bool
     {
         $user = $this->retrieveByCredentials($credentials);
         if ($user === null) {
@@ -70,11 +77,16 @@ class SessionGuard implements GuardInterface
             return false;
         }
 
-        $this->login($user);
+        $this->login($user, $remember);
         return true;
     }
 
-    public function login(mixed $user): void
+    /**
+     * FIX N7: login() accepts an optional $remember flag.
+     * When true and a DatabaseUserProvider is available, it stores a
+     * hashed random token and queues an HttpOnly cookie for 30 days.
+     */
+    public function login(mixed $user, bool $remember = false): void
     {
         $id = is_array($user) ? ($user['id'] ?? null) : ($user->id ?? null);
 
@@ -84,19 +96,94 @@ class SessionGuard implements GuardInterface
         $_SESSION[$this->sessionKey] = $id;
         $this->user         = $user;
         $this->userResolved = true;
+
+        if ($remember && $this->provider instanceof DatabaseUserProvider) {
+            $rawToken = bin2hex(random_bytes(40));
+            $this->provider->updateRememberToken($user, $rawToken);
+            $this->queueRememberCookie($rawToken);
+        }
     }
 
     public function logout(): void
     {
+        $this->guardSession();
+
         unset($_SESSION[$this->sessionKey]);
         $this->user         = null;
         $this->userResolved = false;
 
-        $this->guardSession();
         session_regenerate_id(true);
+
+        // Expire the remember-me cookie
+        $this->expireRememberCookie();
     }
 
-    // ---- Helpers ------------------------------------------------------------
+    // ---- Remember-me helpers ------------------------------------------------
+
+    /**
+     * FIX N7: attempt to authenticate from a remember-me cookie.
+     */
+    protected function recallFromCookie(): mixed
+    {
+        $token = $_COOKIE[$this->cookieName] ?? null;
+        if (!is_string($token) || $token === '') {
+            return null;
+        }
+
+        // Only DatabaseUserProvider supports remember-me token lookup
+        if (!$this->provider instanceof DatabaseUserProvider) {
+            return null;
+        }
+
+        [$userId, $rawToken] = explode('|', $token, 2) + [null, null];
+        if ($userId === null || $rawToken === null) {
+            return null;
+        }
+
+        $user = $this->provider->verifyRememberToken((int) $userId, $rawToken);
+        if ($user !== null) {
+            // Re-stamp session so next request skips cookie
+            $this->guardSession();
+            $_SESSION[$this->sessionKey] = $userId;
+            $this->user         = $user;
+            $this->userResolved = true;
+            // Refresh token rotation
+            $rawNew = bin2hex(random_bytes(40));
+            $this->provider->updateRememberToken($user, $rawNew);
+            $this->queueRememberCookie($rawNew);
+        }
+        return $user;
+    }
+
+    protected function queueRememberCookie(string $rawToken): void
+    {
+        $id    = is_array($this->user) ? ($this->user['id'] ?? 0) : ($this->user->id ?? 0);
+        $value = $id . '|' . $rawToken;
+        $secure = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+        setcookie(
+            $this->cookieName,
+            $value,
+            [
+                'expires'  => time() + 60 * 60 * 24 * 30,
+                'path'     => '/',
+                'httponly' => true,
+                'samesite' => 'Lax',
+                'secure'   => $secure,
+            ]
+        );
+    }
+
+    protected function expireRememberCookie(): void
+    {
+        setcookie($this->cookieName, '', [
+            'expires'  => time() - 3600,
+            'path'     => '/',
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+    }
+
+    // ---- Session helpers ----------------------------------------------------
 
     protected function sessionId(): mixed
     {
@@ -104,16 +191,11 @@ class SessionGuard implements GuardInterface
         return $_SESSION[$this->sessionKey] ?? null;
     }
 
-    /**
-     * SEC-V4-1 FIX: Replace @session_start() with a clean status check.
-     * Throws only if something truly unexpected happens.
-     */
     protected function guardSession(): void
     {
         if (session_status() === PHP_SESSION_NONE) {
             session_start();
         }
-        // PHP_SESSION_DISABLED would be a server mis-configuration — let it surface naturally.
     }
 
     protected function retrieveById(mixed $id): mixed

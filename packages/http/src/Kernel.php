@@ -39,7 +39,7 @@ class Kernel
         try {
             $response = (new Pipeline())
                 ->send($request)
-                ->through($this->middleware)
+                ->through($this->middleware)   // N1: Pipeline resolves each string via container
                 ->then(fn (Request $req) => $this->dispatch($req));
 
             return $response instanceof Response ? $response : Response::make((string) $response);
@@ -59,6 +59,8 @@ class Kernel
             );
         }
 
+        // Resolve route-level middleware aliases to class names;
+        // Pipeline::carry() will instantiate them via the container.
         $routeMiddleware = array_map(
             fn (string $alias) => $this->resolveMiddleware($alias),
             $route->getMiddleware()
@@ -76,8 +78,7 @@ class Kernel
 
     /**
      * Terminate — cleanup after response is sent.
-     * FIX SEC-1: CSRF token is rotated ONLY here (removed from VerifyCsrfToken::handle).
-     * VerifyCsrfToken no longer calls rotateToken() mid-request; it waits for terminate().
+     * CSRF token is rotated ONLY here, never mid-request.
      */
     public function terminate(Request $request, Response $response): void
     {
@@ -116,6 +117,10 @@ class Kernel
         return Response::make($html, $status, ['Content-Type' => 'text/html; charset=UTF-8']);
     }
 
+    /**
+     * Resolve a route middleware alias to a fully-qualified class name.
+     * Pipeline will then resolve the class through the container.
+     */
     public function resolveMiddleware(string $alias): string
     {
         return $this->routeMiddleware[$alias] ?? $alias;

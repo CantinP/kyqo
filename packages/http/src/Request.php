@@ -61,12 +61,18 @@ class Request
 
     public function url(): string
     {
-        return ($this->isSecure() ? 'https' : 'http') . '://' . $this->getValidatedHost() . $this->uri();
+        return ($this->isSecure() ? 'https' : 'http') . '://' . $this->host() . $this->uri();
     }
 
     /**
-     * Return the raw request body (used by ValidateBodySize for SEC-6).
+     * FIX N5: public validated-host accessor used by url() and UrlGenerator::to().
+     * Rejects malformed Host headers and falls back to 'localhost'.
      */
+    public function host(): string
+    {
+        return $this->getValidatedHost();
+    }
+
     public function rawBody(): string
     {
         return $this->content;
