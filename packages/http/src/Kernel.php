@@ -39,7 +39,7 @@ class Kernel
         try {
             $response = (new Pipeline())
                 ->send($request)
-                ->through($this->middleware)   // N1: Pipeline resolves each string via container
+                ->through($this->middleware)
                 ->then(fn (Request $req) => $this->dispatch($req));
 
             return $response instanceof Response ? $response : Response::make((string) $response);
@@ -59,8 +59,6 @@ class Kernel
             );
         }
 
-        // Resolve route-level middleware aliases to class names;
-        // Pipeline::carry() will instantiate them via the container.
         $routeMiddleware = array_map(
             fn (string $alias) => $this->resolveMiddleware($alias),
             $route->getMiddleware()
@@ -77,12 +75,28 @@ class Kernel
     }
 
     /**
-     * Terminate — cleanup after response is sent.
-     * CSRF token is rotated ONLY here, never mid-request.
+     * FIX M1: rotate the CSRF token only when the current path is NOT in
+     * the except list. API/webhook routes share the same session but must
+     * not rotate the token used by the browser tab running in parallel.
      */
     public function terminate(Request $request, Response $response): void
     {
-        if (session_status() === PHP_SESSION_ACTIVE) {
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            return;
+        }
+
+        $csrfMiddleware = new VerifyCsrfToken();
+        $path           = ltrim($request->path(), '/');
+
+        $isExcluded = false;
+        foreach ($this->getCsrfExceptPatterns() as $pattern) {
+            if (fnmatch($pattern, $path)) {
+                $isExcluded = true;
+                break;
+            }
+        }
+
+        if (!$isExcluded) {
             VerifyCsrfToken::rotateToken();
         }
     }
@@ -117,12 +131,18 @@ class Kernel
         return Response::make($html, $status, ['Content-Type' => 'text/html; charset=UTF-8']);
     }
 
-    /**
-     * Resolve a route middleware alias to a fully-qualified class name.
-     * Pipeline will then resolve the class through the container.
-     */
     public function resolveMiddleware(string $alias): string
     {
         return $this->routeMiddleware[$alias] ?? $alias;
+    }
+
+    /**
+     * Return the CSRF except patterns from the middleware instance.
+     * Centralises the pattern list so Kernel::terminate() and
+     * VerifyCsrfToken::inExceptArray() always use the same set.
+     */
+    protected function getCsrfExceptPatterns(): array
+    {
+        return ['api/*', 'webhooks/*'];
     }
 }

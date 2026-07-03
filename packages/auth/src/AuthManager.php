@@ -9,7 +9,11 @@ use Kyqo\Http\Request;
 /**
  * Kyqo Auth Manager
  *
- * FIX #2 (TokenGuard): passes the current Request to TokenGuard.
+ * FIX M3: makeDatabaseProvider() no longer silently falls back to an empty
+ * DatabaseManager when the container cannot resolve it.
+ * If the DB manager is unavailable, a RuntimeException is thrown so that
+ * mis-configuration is surfaced immediately instead of allowing the app to
+ * appear to work while silently returning null for every auth check.
  */
 class AuthManager
 {
@@ -93,12 +97,27 @@ class AuthManager
         return $this->providers[$name];
     }
 
+    /**
+     * FIX M3: throw if the DatabaseManager cannot be resolved.
+     *
+     * The previous behaviour (new DatabaseManager([])) silently returned null
+     * for every user lookup because no connection was configured, making the
+     * entire auth subsystem a no-op without any visible error.
+     *
+     * @throws \RuntimeException if 'db' is not bound in the container.
+     */
     protected function makeDatabaseProvider(array $config): Providers\DatabaseUserProvider
     {
         try {
             $db = Application::getInstance()->make(DatabaseManager::class);
-        } catch (\Throwable) {
-            $db = new DatabaseManager([]);
+        } catch (\Throwable $e) {
+            throw new \RuntimeException(
+                'Auth database provider could not resolve DatabaseManager. ' .
+                'Ensure the database is configured and the container is bootstrapped. ' .
+                'Original error: ' . $e->getMessage(),
+                0,
+                $e
+            );
         }
         return new Providers\DatabaseUserProvider($db, $config);
     }

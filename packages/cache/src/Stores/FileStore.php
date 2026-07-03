@@ -7,11 +7,9 @@ use Kyqo\Cache\StoreInterface;
 /**
  * File-based cache store.
  *
- * FIX m1: has() now correctly returns true even when the stored value is null.
- * The old implementation used `$this->get($key) !== null`, which incorrectly
- * returned false for legitimately cached null values.
- * The new implementation checks file existence and TTL directly,
- * mirroring the same logic as get() but without returning the value.
+ * Refactor: readEntry() is now a shared private helper used by both
+ * get() and has(), eliminating duplicated file-read + TTL logic and
+ * ensuring the two methods are always in sync.
  */
 class FileStore implements StoreInterface
 {
@@ -27,32 +25,8 @@ class FileStore implements StoreInterface
 
     public function get(string $key, mixed $default = null): mixed
     {
-        $file = $this->path($key);
-        if (!file_exists($file)) {
-            return $default;
-        }
-
-        $fh = fopen($file, 'r');
-        if ($fh === false) {
-            return $default;
-        }
-
-        flock($fh, LOCK_SH);
-        $raw = stream_get_contents($fh);
-        flock($fh, LOCK_UN);
-        fclose($fh);
-
-        $data = json_decode((string) $raw, true);
-        if (!is_array($data)) {
-            return $default;
-        }
-
-        if ($data['expires_at'] !== 0 && $data['expires_at'] <= time()) {
-            @unlink($file);
-            return $default;
-        }
-
-        return $data['value'];
+        $entry = $this->readEntry($key);
+        return $entry !== null ? $entry['value'] : $default;
     }
 
     public function put(string $key, mixed $value, int $ttl = 3600): bool
@@ -90,38 +64,12 @@ class FileStore implements StoreInterface
     }
 
     /**
-     * FIX m1: check key existence by reading the file metadata directly,
-     * not by comparing the stored value to null.
+     * Key exists iff readEntry() returns a non-null array —
+     * correctly handles null values stored intentionally.
      */
     public function has(string $key): bool
     {
-        $file = $this->path($key);
-        if (!file_exists($file)) {
-            return false;
-        }
-
-        $fh = fopen($file, 'r');
-        if ($fh === false) {
-            return false;
-        }
-
-        flock($fh, LOCK_SH);
-        $raw = stream_get_contents($fh);
-        flock($fh, LOCK_UN);
-        fclose($fh);
-
-        $data = json_decode((string) $raw, true);
-        if (!is_array($data)) {
-            return false;
-        }
-
-        if ($data['expires_at'] !== 0 && $data['expires_at'] <= time()) {
-            @unlink($file);
-            return false;
-        }
-
-        // Key exists and has not expired — value may legitimately be null
-        return true;
+        return $this->readEntry($key) !== null;
     }
 
     public function flush(): bool
@@ -131,6 +79,43 @@ class FileStore implements StoreInterface
             @unlink($file);
         }
         return true;
+    }
+
+    /**
+     * Shared TTL-aware file reader.
+     *
+     * Returns the decoded array on a valid, non-expired hit.
+     * Returns null on missing file, unreadable file, corrupt JSON, or expiry.
+     * Evicts expired entries on read (lazy expiry).
+     */
+    private function readEntry(string $key): ?array
+    {
+        $file = $this->path($key);
+        if (!file_exists($file)) {
+            return null;
+        }
+
+        $fh = fopen($file, 'r');
+        if ($fh === false) {
+            return null;
+        }
+
+        flock($fh, LOCK_SH);
+        $raw = stream_get_contents($fh);
+        flock($fh, LOCK_UN);
+        fclose($fh);
+
+        $data = json_decode((string) $raw, true);
+        if (!is_array($data)) {
+            return null;
+        }
+
+        if ($data['expires_at'] !== 0 && $data['expires_at'] <= time()) {
+            @unlink($file);
+            return null;
+        }
+
+        return $data;
     }
 
     protected function path(string $key): string

@@ -9,12 +9,12 @@ use Kyqo\Auth\Providers\DatabaseUserProvider;
 /**
  * Session-based authentication guard.
  *
- * FIX N7: login() now optionally sets a remember-me cookie by storing
- * a signed token in the `remember_token` column and issuing an HttpOnly
- * Secure cookie. On subsequent requests, user() will check the cookie
- * when no session ID is present.
+ * FIX C1: recallFromCookie() now validates the cookie format with a strict
+ * regex before any processing. Malformed, empty, or injected cookie values
+ * are rejected immediately — preventing a userId=0 match via (int) cast
+ * on a cookie that contains no pipe separator.
  *
- * Remember-me is opt-in via $remember = true in attempt() / login().
+ * Pattern: "<digits>|<80 hex chars>"  (id|sha256(rawToken) = 10+1+80 chars)
  */
 class SessionGuard implements GuardInterface
 {
@@ -25,6 +25,9 @@ class SessionGuard implements GuardInterface
     protected string $sessionKey;
     protected string $cookieName;
     protected ?UserProviderInterface $provider;
+
+    /** Expected cookie format: "<int>|<80 lower-hex chars>" */
+    private const REMEMBER_TOKEN_PATTERN = '/^\d+\|[a-f0-9]{80}$/';
 
     public function __construct(
         string $name,
@@ -45,14 +48,12 @@ class SessionGuard implements GuardInterface
         }
         $this->userResolved = true;
 
-        // 1. Session-based lookup
         $id = $this->sessionId();
         if ($id !== null) {
             $this->user = $this->retrieveById($id);
             return $this->user;
         }
 
-        // 2. FIX N7: Remember-me cookie fallback
         $this->user = $this->recallFromCookie();
         return $this->user;
     }
@@ -81,11 +82,6 @@ class SessionGuard implements GuardInterface
         return true;
     }
 
-    /**
-     * FIX N7: login() accepts an optional $remember flag.
-     * When true and a DatabaseUserProvider is available, it stores a
-     * hashed random token and queues an HttpOnly cookie for 30 days.
-     */
     public function login(mixed $user, bool $remember = false): void
     {
         $id = is_array($user) ? ($user['id'] ?? null) : ($user->id ?? null);
@@ -113,41 +109,46 @@ class SessionGuard implements GuardInterface
         $this->userResolved = false;
 
         session_regenerate_id(true);
-
-        // Expire the remember-me cookie
         $this->expireRememberCookie();
     }
 
     // ---- Remember-me helpers ------------------------------------------------
 
     /**
-     * FIX N7: attempt to authenticate from a remember-me cookie.
+     * FIX C1: strict format validation before any processing.
+     *
+     * Cookie must match "<digits>|<80 hex chars>".
+     * bin2hex(random_bytes(40)) produces exactly 80 hex characters.
+     * Any cookie that does not match is silently discarded — no DB hit,
+     * no (int) cast on garbage input.
      */
     protected function recallFromCookie(): mixed
     {
         $token = $_COOKIE[$this->cookieName] ?? null;
-        if (!is_string($token) || $token === '') {
+
+        if (!is_string($token) || !preg_match(self::REMEMBER_TOKEN_PATTERN, $token)) {
             return null;
         }
 
-        // Only DatabaseUserProvider supports remember-me token lookup
         if (!$this->provider instanceof DatabaseUserProvider) {
             return null;
         }
 
-        [$userId, $rawToken] = explode('|', $token, 2) + [null, null];
-        if ($userId === null || $rawToken === null) {
+        [$userId, $rawToken] = explode('|', $token, 2);
+
+        // userId was validated as \d+ so cast is safe; 0 is still rejected
+        // by verifyRememberToken() if no user with id=0 exists.
+        $userId = (int) $userId;
+        if ($userId <= 0) {
             return null;
         }
 
-        $user = $this->provider->verifyRememberToken((int) $userId, $rawToken);
+        $user = $this->provider->verifyRememberToken($userId, $rawToken);
         if ($user !== null) {
-            // Re-stamp session so next request skips cookie
             $this->guardSession();
             $_SESSION[$this->sessionKey] = $userId;
             $this->user         = $user;
             $this->userResolved = true;
-            // Refresh token rotation
             $rawNew = bin2hex(random_bytes(40));
             $this->provider->updateRememberToken($user, $rawNew);
             $this->queueRememberCookie($rawNew);

@@ -8,13 +8,14 @@ use Kyqo\Http\Request;
 /**
  * Middleware Pipeline
  *
- * FIX N1: resolveMiddleware() now uses Application::make() for ALL middleware
- * (global and route-level), with constructor injection.
- * The catch-all fallback `new $class()` is only used when the container
- * is unavailable (e.g. unit tests without a bootstrapped app), and only
- * for zero-dependency middleware (like SecurityHeaders).
- * For middleware with constructor dependencies (ThrottleRequests, Authenticate),
- * they MUST be bound in the container to work correctly.
+ * FIX C2: resolveMiddleware() now validates:
+ *   1. The class exists.
+ *   2. The resolved instance has a handle() method.
+ * If either check fails, a RuntimeException is thrown instead of silently
+ * returning a broken object or calling new on an unknown class.
+ *
+ * The container fallback (new $class()) is kept only for zero-dependency
+ * middleware in containerless test environments, but is now guarded.
  */
 class Pipeline
 {
@@ -57,18 +58,40 @@ class Pipeline
     }
 
     /**
-     * FIX N1: always try the container first so that middleware with
-     * constructor dependencies (AuthManager, config, etc.) are properly injected.
-     * Falls back to `new $class()` only for zero-dep middleware in test contexts.
+     * FIX C2: resolve with full validation.
+     *
+     * Resolution order:
+     *   1. Application container (preferred — supports constructor injection).
+     *   2. Direct instantiation fallback (zero-arg middleware only, test contexts).
+     *
+     * After resolution, verify the instance has handle() — throws if not.
+     *
+     * @throws \RuntimeException if class does not exist or has no handle() method.
      */
     protected function resolveMiddleware(string $class): object
     {
-        try {
-            $app = Application::getInstance();
-            return $app->make($class);
-        } catch (\Throwable) {
-            // Last resort: only works for middleware with no constructor args.
-            return new $class();
+        if (!class_exists($class)) {
+            throw new \RuntimeException(
+                "Middleware class [{$class}] does not exist."
+            );
         }
+
+        $instance = null;
+
+        try {
+            $app      = Application::getInstance();
+            $instance = $app->make($class);
+        } catch (\Throwable) {
+            // Fallback for zero-dependency middleware in containerless contexts
+            $instance = new $class();
+        }
+
+        if (!method_exists($instance, 'handle')) {
+            throw new \RuntimeException(
+                "Middleware [{$class}] does not implement a handle() method."
+            );
+        }
+
+        return $instance;
     }
 }
