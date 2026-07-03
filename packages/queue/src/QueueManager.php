@@ -5,10 +5,10 @@ namespace Kyqo\Queue;
 /**
  * Kyqo Queue Manager
  *
- * FIX M3: dispatch() no longer swallows exceptions with a silent fallback.
- * If Container::make() fails to inject a dependency, the exception propagates
- * so the developer can see the real error instead of a silent no-op.
- * The zero-argument fallback is removed entirely.
+ * FIX m4: dispatch() now verifies that the handle() method is public before
+ * invoking it via reflection. A protected or private handle() would cause a
+ * fatal Error at runtime; instead a BadMethodCallException is thrown early
+ * with a clear diagnostic message.
  */
 class QueueManager
 {
@@ -44,11 +44,12 @@ class QueueManager
     /**
      * Dispatch a job immediately by resolving its handle() dependencies via the container.
      *
-     * FIX M3: exceptions from dependency resolution now propagate.
-     * The previous silent catch (which called handle() with no args as fallback)
-     * masked real container/DI errors and made debugging impossible.
+     * FIX m4: ReflectionMethod::isPublic() is checked before invocation.
+     * A non-public handle() raises BadMethodCallException immediately, with
+     * a clear message, rather than a cryptic Error at call time.
      *
-     * @throws \BadMethodCallException if the job has no handle() method.
+     * @throws \BadMethodCallException if handle() is absent or not public.
+     * @throws \RuntimeException       if a primitive parameter cannot be resolved.
      */
     public function dispatch(object $job): mixed
     {
@@ -58,15 +59,22 @@ class QueueManager
             );
         }
 
-        $app    = \Kyqo\Core\Application::getInstance();
         $method = new \ReflectionMethod($job, 'handle');
+
+        // FIX m4: reject non-public handle() early.
+        if (!$method->isPublic()) {
+            throw new \BadMethodCallException(
+                get_class($job) . '::handle() must be public to be dispatched.'
+            );
+        }
+
+        $app    = \Kyqo\Core\Application::getInstance();
         $params = $method->getParameters();
         $args   = [];
 
         foreach ($params as $param) {
             $type = $param->getType();
             if ($type && !$type->isBuiltin()) {
-                // Throws if the service is not bound — surfaces the real error
                 $args[] = $app->make($type->getName());
             } elseif ($param->isDefaultValueAvailable()) {
                 $args[] = $param->getDefaultValue();

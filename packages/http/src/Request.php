@@ -2,6 +2,22 @@
 
 namespace Kyqo\Http;
 
+/**
+ * HTTP Request
+ *
+ * FIX m2: capture() no longer reads php://input unboundedly into memory.
+ * Before opening the stream, CONTENT_LENGTH is checked against the
+ * configured $maxBodySize (default 10 MB). If the declared size already
+ * exceeds the limit, the body is set to '' and the request continues —
+ * ValidateBodySize middleware will then reject it with HTTP 413.
+ * For streaming bodies without CONTENT_LENGTH the read is bounded via
+ * stream_copy_to_stream with a hard cap of maxBodySize + 1 bytes, so a
+ * truncated (oversized) body is written to a temp stream and returned as
+ * a string; again ValidateBodySize will reject it on the actual length.
+ *
+ * This eliminates the RAM exhaustion window that existed between
+ * Request::capture() and the ValidateBodySize middleware execution.
+ */
 class Request
 {
     protected array  $query;
@@ -12,7 +28,7 @@ class Request
     protected string $content;
     protected array  $customAttributes = [];
 
-    protected int   $maxBodySize    = 10 * 1024 * 1024;
+    protected int   $maxBodySize    = 10 * 1024 * 1024; // 10 MB
     protected array $allowedMethods = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
 
     public function __construct(
@@ -30,15 +46,74 @@ class Request
         $this->content = $content;
     }
 
+    /**
+     * FIX m2: bounded php://input read.
+     *
+     * 1. If Content-Length is declared and already exceeds the cap, skip reading
+     *    entirely (body = ''). ValidateBodySize will issue 413.
+     * 2. Otherwise read at most (maxBodySize + 1) bytes via stream_copy_to_stream.
+     *    The +1 ensures that an exactly-at-limit body is accepted while an
+     *    over-limit body is detectable by ValidateBodySize (strlen > maxBodySize).
+     * 3. For non-body methods (GET, HEAD, OPTIONS) no read is attempted.
+     */
     public static function capture(): static
     {
+        $server = $_SERVER;
+        $method = strtoupper($server['REQUEST_METHOD'] ?? 'GET');
+
+        $content = '';
+        if (!in_array($method, ['GET', 'HEAD', 'OPTIONS'], true)) {
+            $content = static::readBoundedInput(
+                (int) ($server['CONTENT_LENGTH'] ?? -1),
+                10 * 1024 * 1024   // same constant as $maxBodySize
+            );
+        }
+
         return new static(
             $_GET,
             $_POST,
             $_FILES,
-            $_SERVER,
-            file_get_contents('php://input') ?: ''
+            $server,
+            $content
         );
+    }
+
+    /**
+     * Read php://input with a hard memory cap.
+     *
+     * @param int $declaredLength  Value of Content-Length header (-1 if absent).
+     * @param int $maxBytes        Maximum bytes to accept.
+     * @return string              Raw body, possibly truncated (ValidateBodySize will reject if too long).
+     */
+    protected static function readBoundedInput(int $declaredLength, int $maxBytes): string
+    {
+        // Fast path: Content-Length already over cap — don't read at all.
+        if ($declaredLength > $maxBytes) {
+            return '';
+        }
+
+        $input = fopen('php://input', 'r');
+        if ($input === false) {
+            return '';
+        }
+
+        $temp = fopen('php://temp', 'w+b');
+        if ($temp === false) {
+            fclose($input);
+            return '';
+        }
+
+        // Read at most maxBytes + 1 bytes.
+        // If the body is exactly maxBytes the whole thing is stored;
+        // if it's longer, ValidateBodySize will see strlen > maxBytes and reject.
+        stream_copy_to_stream($input, $temp, $maxBytes + 1);
+        fclose($input);
+
+        rewind($temp);
+        $content = stream_get_contents($temp);
+        fclose($temp);
+
+        return $content === false ? '' : $content;
     }
 
     public function method(): string
@@ -64,10 +139,6 @@ class Request
         return ($this->isSecure() ? 'https' : 'http') . '://' . $this->host() . $this->uri();
     }
 
-    /**
-     * FIX N5: public validated-host accessor used by url() and UrlGenerator::to().
-     * Rejects malformed Host headers and falls back to 'localhost'.
-     */
     public function host(): string
     {
         return $this->getValidatedHost();
