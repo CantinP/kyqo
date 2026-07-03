@@ -3,22 +3,25 @@
 namespace Kyqo\Http\Router;
 
 use Closure;
-use Kyqo\Core\Container\Container;
+use Kyqo\Core\Application;
 
 /**
  * Represents a single registered route.
  *
- * BUG FIX: Controllers are now resolved through the IoC Container
- *          so constructor dependencies are properly injected.
+ * FIX BUG-NEW-3: Controllers are resolved through Application::getInstance()
+ *               (the fully bootstrapped app container), NOT bare Container::getInstance().
  */
 class Route
 {
-    protected array $methods;
-    protected string $uri;
+    protected array   $methods;
+    protected string  $uri;
     protected Closure|array|string $action;
-    protected array $middleware  = [];
-    protected ?string $name      = null;
-    protected array $parameters  = [];
+    protected array   $middleware  = [];
+    protected ?string $name        = null;
+    protected array   $parameters  = [];
+
+    /** Back-reference to the Router so name() can register named routes. */
+    protected ?Router $router = null;
 
     public function __construct(array $methods, string $uri, Closure|array|string $action)
     {
@@ -27,9 +30,21 @@ class Route
         $this->action  = $action;
     }
 
+    /** Called by Router::addRoute() so the route can self-register named routes. */
+    public function setRouter(Router $router): static
+    {
+        $this->router = $router;
+        return $this;
+    }
+
+    /**
+     * Assign a name and register it in the parent Router.
+     * MINOR FIX: namedRoutes was never populated before.
+     */
     public function name(string $name): static
     {
         $this->name = $name;
+        $this->router?->registerNamedRoute($name, $this->uri);
         return $this;
     }
 
@@ -42,9 +57,6 @@ class Route
         return $this;
     }
 
-    /**
-     * Check if this route matches the given method and URI.
-     */
     public function matches(string $method, string $uri): bool
     {
         if (!in_array($method, $this->methods, true)) {
@@ -66,9 +78,7 @@ class Route
 
     /**
      * Run the route action.
-     *
-     * BUG FIX: Controllers are resolved through the Container so their
-     *          constructor dependencies are injected automatically.
+     * FIX BUG-NEW-3: Uses Application singleton (the real bootstrapped container).
      */
     public function run(): mixed
     {
@@ -77,45 +87,31 @@ class Route
         }
 
         [$controllerClass, $method] = $this->resolveControllerAndMethod();
-
-        // BUG FIX: Use the IoC container to instantiate controllers
         $controller = $this->resolveController($controllerClass);
-
         return $controller->$method(...array_values($this->parameters));
     }
 
-    /**
-     * Resolve controller class and method from various action formats.
-     */
     protected function resolveControllerAndMethod(): array
     {
         if (is_array($this->action)) {
             return [$this->action[0], $this->action[1]];
         }
-
         if (is_string($this->action) && str_contains($this->action, '@')) {
             return explode('@', $this->action, 2);
         }
-
         throw new \RuntimeException('Invalid route action format.');
     }
 
     /**
-     * Resolve a controller through the IoC container if available,
-     * otherwise fall back to direct instantiation.
+     * Resolve controller via Application (fully bootstrapped container).
+     * Falls back to direct instantiation only if app is not booted yet.
      */
     protected function resolveController(string $class): object
     {
-        // Use the container singleton if available
         try {
-            $container = Container::getInstance();
-            if ($container !== null && $container->bound($class)) {
-                return $container->make($class);
-            }
-            // Auto-resolve through the container (handles constructor DI)
-            return $container->build($class);
+            $app = Application::getInstance();
+            return $app->make($class);
         } catch (\Throwable) {
-            // Fallback: direct instantiation (no DI)
             return new $class();
         }
     }

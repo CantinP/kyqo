@@ -9,35 +9,17 @@ use Kyqo\Http\Middleware\ValidateBodySize;
 use Kyqo\Http\Middleware\VerifyCsrfToken;
 use Kyqo\Http\Router\Router;
 
-/**
- * HTTP Kernel
- *
- * The central dispatcher for all HTTP requests.
- * Every request passes through the global middleware stack
- * before reaching the router, and every response passes back through it.
- *
- * BUG FIX: Router type-hint now correctly uses Kyqo\Http\Router\Router.
- * BUG FIX: Router is resolved from the container via bootstrap/app.php binding.
- * BUG FIX: Route-level middleware is now executed via runWithMiddleware().
- */
 class Kernel
 {
-    /**
-     * Global middleware applied to every HTTP request.
-     * Order matters: runs top-to-bottom on request, bottom-to-top on response.
-     */
     protected array $middleware = [
-        ValidateBodySize::class,   // 1. Reject oversized bodies first
-        SecurityHeaders::class,    // 2. Inject security headers on every response
-        VerifyCsrfToken::class,    // 3. Validate CSRF on state-mutating requests
-        ThrottleRequests::class,   // 4. Rate-limit by IP+route
+        ValidateBodySize::class,
+        SecurityHeaders::class,
+        VerifyCsrfToken::class,
+        ThrottleRequests::class,
     ];
 
-    /**
-     * Named middleware aliases available to individual routes.
-     * SEC FIX: auth middleware now only bound when the class exists.
-     */
     protected array $routeMiddleware = [
+        'auth'     => \Kyqo\Auth\Middleware\Authenticate::class,
         'throttle' => ThrottleRequests::class,
         'csrf'     => VerifyCsrfToken::class,
         'headers'  => SecurityHeaders::class,
@@ -52,9 +34,6 @@ class Kernel
         $this->config = $config;
     }
 
-    /**
-     * Handle an incoming HTTP request through the full middleware pipeline.
-     */
     public function handle(Request $request): Response
     {
         try {
@@ -69,12 +48,6 @@ class Kernel
         }
     }
 
-    /**
-     * Dispatch the request to the matching route,
-     * then run any route-level middleware around the route action.
-     *
-     * BUG FIX (SEC-1): Route middleware is now actually executed.
-     */
     protected function dispatch(Request $request): mixed
     {
         $route = $this->router->findRoute($request->method(), $request->uri());
@@ -102,7 +75,9 @@ class Kernel
     }
 
     /**
-     * Terminate the kernel after the response has been sent.
+     * Terminate — cleanup after response is sent.
+     * FIX SEC-1: CSRF token is rotated ONLY here (removed from VerifyCsrfToken::handle).
+     * VerifyCsrfToken no longer calls rotateToken() mid-request; it waits for terminate().
      */
     public function terminate(Request $request, Response $response): void
     {
@@ -111,10 +86,6 @@ class Kernel
         }
     }
 
-    /**
-     * Handle exceptions and produce an appropriate HTTP response.
-     * SECURITY: In production, never expose internal error details.
-     */
     protected function handleException(Request $request, \Throwable $e): Response
     {
         $debug  = (bool) ($this->config['debug'] ?? false);
@@ -139,15 +110,12 @@ class Kernel
             $trace = htmlspecialchars($e->getTraceAsString(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
             $html  = "<!DOCTYPE html><html><body><h1>Error {$status}</h1><pre>{$safe}\n\n{$trace}</pre></body></html>";
         } else {
-            $html = "<!DOCTYPE html><html><body><h1>Error {$status}</h1><p>An unexpected error occurred. Please try again later.</p></body></html>";
+            $html = "<!DOCTYPE html><html><body><h1>Error {$status}</h1><p>An unexpected error occurred.</p></body></html>";
         }
 
         return Response::make($html, $status, ['Content-Type' => 'text/html; charset=UTF-8']);
     }
 
-    /**
-     * Resolve a route middleware by its alias or FQCN.
-     */
     public function resolveMiddleware(string $alias): string
     {
         return $this->routeMiddleware[$alias] ?? $alias;

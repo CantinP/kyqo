@@ -3,24 +3,18 @@
 namespace Kyqo\Auth\Guards;
 
 use Kyqo\Auth\GuardInterface;
-use Kyqo\Http\Request;
 
 /**
  * Token-based authentication guard.
  *
- * Authenticates API requests via Bearer token in the Authorization header
- * or via an `api_token` query/body parameter.
- *
- * SECURITY:
- * - Token comparison uses hash_equals() to prevent timing attacks.
- * - Tokens should be stored hashed (SHA-256) in the database.
+ * FIX SEC-5: id() now returns the authenticated user's ID instead of null.
  */
 class TokenGuard implements GuardInterface
 {
     protected string $name;
-    protected array $config;
-    protected mixed $user = null;
-    protected bool $userResolved = false;
+    protected array  $config;
+    protected mixed  $user         = null;
+    protected bool   $userResolved = false;
 
     public function __construct(string $name, array $config)
     {
@@ -45,16 +39,21 @@ class TokenGuard implements GuardInterface
         return $this->user;
     }
 
-    public function check(): bool  { return $this->user() !== null; }
-    public function id(): mixed    { return null; }
+    public function check(): bool { return $this->user() !== null; }
 
     /**
-     * Token guards don't support attempt().
+     * FIX SEC-5: Return the authenticated user's primary key, not null.
      */
-    public function attempt(array $credentials): bool
+    public function id(): mixed
     {
-        return false;
+        $user = $this->user();
+        if ($user === null) {
+            return null;
+        }
+        return is_array($user) ? ($user['id'] ?? null) : ($user->id ?? null);
     }
+
+    public function attempt(array $credentials): bool { return false; }
 
     public function login(mixed $user): void
     {
@@ -68,12 +67,8 @@ class TokenGuard implements GuardInterface
         $this->userResolved = false;
     }
 
-    /**
-     * Extract the Bearer token from the request.
-     */
     protected function extractToken(): ?string
     {
-        // From Authorization: Bearer <token>
         $auth = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
         if (str_starts_with($auth, 'Bearer ')) {
             $token = substr($auth, 7);
@@ -82,7 +77,6 @@ class TokenGuard implements GuardInterface
             }
         }
 
-        // From query string or POST body
         $inputToken = $_GET['api_token'] ?? $_POST['api_token'] ?? null;
         if (is_string($inputToken) && strlen($inputToken) > 0) {
             return $inputToken;
@@ -91,14 +85,9 @@ class TokenGuard implements GuardInterface
         return null;
     }
 
-    /**
-     * Retrieve a user by token.
-     * SECURITY: Compare hashed tokens with hash_equals() to prevent timing attacks.
-     * Override in your application by binding a UserProvider.
-     */
     protected function retrieveByToken(string $token): mixed
     {
-        // Stub — to be implemented via UserProvider
+        // Stub — implement via UserProvider
         return null;
     }
 }

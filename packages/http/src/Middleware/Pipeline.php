@@ -2,8 +2,15 @@
 
 namespace Kyqo\Http\Middleware;
 
+use Kyqo\Core\Application;
 use Kyqo\Http\Request;
 
+/**
+ * Middleware Pipeline
+ *
+ * Resolves middleware through the Application container when available,
+ * so middleware can have constructor dependencies injected.
+ */
 class Pipeline
 {
     protected Request $request;
@@ -37,11 +44,23 @@ class Pipeline
         return function (\Closure $next, $middleware) {
             return function (Request $request) use ($next, $middleware) {
                 if (is_string($middleware)) {
-                    $middleware = new $middleware();
+                    $middleware = $this->resolveMiddleware($middleware);
                 }
-
                 return $middleware->handle($request, $next);
             };
         };
+    }
+
+    /**
+     * Resolve a middleware class through the container if possible,
+     * otherwise fall back to direct instantiation.
+     */
+    protected function resolveMiddleware(string $class): object
+    {
+        try {
+            return Application::getInstance()->make($class);
+        } catch (\Throwable) {
+            return new $class();
+        }
     }
 }

@@ -10,24 +10,25 @@ use Kyqo\Core\Exceptions\ContainerException;
 class Container implements ContainerContract
 {
     protected static ?self $instance = null;
-    protected array $bindings = [];
-    protected array $instances = [];
-    protected array $aliases = [];
-    protected array $abstractAliases = [];
-    protected array $trustedNamespaces = [
-        'Kyqo\\',
-        'App\\',
-    ];
+
+    protected array $bindings         = [];
+    protected array $instances        = [];
+    protected array $aliases          = [];
+    protected array $abstractAliases  = [];
+
+    /** Only classes in these namespaces can be auto-resolved. */
+    protected array $trustedNamespaces = ['Kyqo\\', 'App\\'];
+
+    /** Classes blocked from container resolution regardless of namespace. */
     protected array $blockedClasses = [
-        'PDO',
-        'SplFileObject',
-        'DirectoryIterator',
-        'RecursiveDirectoryIterator',
-        'FilesystemIterator',
-        'GlobIterator',
-        'SimpleXMLElement',
-        'DOMDocument',
+        'PDO', 'SplFileObject', 'DirectoryIterator',
+        'RecursiveDirectoryIterator', 'FilesystemIterator',
+        'GlobIterator', 'SimpleXMLElement', 'DOMDocument',
     ];
+
+    // -------------------------------------------------------------------------
+    // Public API
+    // -------------------------------------------------------------------------
 
     public function bind(string $abstract, Closure|string|null $concrete = null, bool $shared = false): void
     {
@@ -59,7 +60,7 @@ class Container implements ContainerContract
         }
 
         $concrete = $this->getConcrete($abstract);
-        $object = $this->build($concrete, $parameters);
+        $object   = $this->build($concrete, $parameters);
 
         if ($this->isShared($abstract)) {
             $this->instances[$abstract] = $object;
@@ -87,7 +88,7 @@ class Container implements ContainerContract
         }
 
         $constructor = $reflector->getConstructor();
-        if (is_null($constructor)) {
+        if ($constructor === null) {
             return new $concrete();
         }
 
@@ -95,15 +96,36 @@ class Container implements ContainerContract
         return $reflector->newInstanceArgs($dependencies);
     }
 
+    /**
+     * Register an alias.
+     * FIX BUG-NEW-2: Detect alias cycles before registering.
+     */
     public function alias(string $abstract, string $alias): void
     {
-        $this->aliases[$alias] = $abstract;
-        $this->abstractAliases[$abstract][] = $alias;
+        if ($abstract === $alias) {
+            throw new ContainerException("[{$abstract}] cannot be aliased to itself.");
+        }
+
+        // Detect cycle: if $alias is already an alias chain that resolves to $abstract, refuse.
+        $resolved = $alias;
+        $visited  = [$abstract];
+        while (isset($this->aliases[$resolved])) {
+            $resolved = $this->aliases[$resolved];
+            if (in_array($resolved, $visited, true)) {
+                throw new ContainerException("Alias cycle detected: [{$abstract}] <-> [{$alias}].");
+            }
+            $visited[] = $resolved;
+        }
+
+        $this->aliases[$alias]               = $abstract;
+        $this->abstractAliases[$abstract][]  = $alias;
     }
 
     public function bound(string $abstract): bool
     {
-        return isset($this->bindings[$abstract]) || isset($this->instances[$abstract]) || $this->isAlias($abstract);
+        return isset($this->bindings[$abstract])
+            || isset($this->instances[$abstract])
+            || $this->isAlias($abstract);
     }
 
     public static function getInstance(): static
@@ -120,12 +142,18 @@ class Container implements ContainerContract
         return static::$instance;
     }
 
+    // -------------------------------------------------------------------------
+    // Protected helpers
+    // -------------------------------------------------------------------------
+
     protected function guardAgainstDangerousClass(string $class): void
     {
         $normalized = ltrim($class, '\\');
         foreach ($this->blockedClasses as $blocked) {
             if ($normalized === ltrim($blocked, '\\')) {
-                throw new ContainerException("Security: class [{$class}] is blocked from container resolution.");
+                throw new ContainerException(
+                    "Security: class [{$class}] is blocked from container resolution."
+                );
             }
         }
     }
@@ -137,8 +165,9 @@ class Container implements ContainerContract
                 return;
             }
         }
-
-        throw new ContainerException("Security: class [{$class}] is not in a trusted namespace and is not explicitly bound.");
+        throw new ContainerException(
+            "Security: class [{$class}] is not in a trusted namespace and is not explicitly bound."
+        );
     }
 
     protected function resolveDependencies(array $parameters, array $primitives = []): array
@@ -156,7 +185,9 @@ class Container implements ContainerContract
             } elseif ($parameter->isDefaultValueAvailable()) {
                 $dependencies[] = $parameter->getDefaultValue();
             } else {
-                throw new ContainerException("Cannot resolve parameter [{$parameter->name}].");
+                throw new ContainerException(
+                    "Cannot resolve parameter [{$parameter->name}] for [{$type?->getName()}]."
+                );
             }
         }
         return $dependencies;
@@ -176,7 +207,8 @@ class Container implements ContainerContract
 
     protected function isShared(string $abstract): bool
     {
-        return isset($this->instances[$abstract]) || ($this->bindings[$abstract]['shared'] ?? false);
+        return isset($this->instances[$abstract])
+            || ($this->bindings[$abstract]['shared'] ?? false);
     }
 
     protected function isAlias(string $name): bool
@@ -184,9 +216,21 @@ class Container implements ContainerContract
         return isset($this->aliases[$name]);
     }
 
+    /**
+     * FIX BUG-NEW-2: Iterative alias resolution — no recursion, no stack overflow.
+     */
     protected function getAlias(string $abstract): string
     {
-        return isset($this->aliases[$abstract]) ? $this->getAlias($this->aliases[$abstract]) : $abstract;
+        $visited = [];
+        while (isset($this->aliases[$abstract])) {
+            if (isset($visited[$abstract])) {
+                // Cycle detected at runtime — break out safely
+                break;
+            }
+            $visited[$abstract] = true;
+            $abstract = $this->aliases[$abstract];
+        }
+        return $abstract;
     }
 
     protected function dropStaleInstances(string $abstract): void

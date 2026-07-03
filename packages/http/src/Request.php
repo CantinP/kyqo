@@ -4,27 +4,28 @@ namespace Kyqo\Http;
 
 class Request
 {
-    protected array $query;
-    protected array $input;
-    protected array $files;
-    protected array $server;
-    protected array $headers;
+    protected array  $query;
+    protected array  $input;
+    protected array  $files;
+    protected array  $server;
+    protected array  $headers;
     protected string $content;
-    protected array $customAttributes = [];
-    protected int $maxBodySize = 10 * 1024 * 1024;
+    protected array  $customAttributes = [];
+
+    protected int   $maxBodySize    = 10 * 1024 * 1024;
     protected array $allowedMethods = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
 
     public function __construct(
-        array $query = [],
-        array $input = [],
-        array $files = [],
-        array $server = [],
+        array  $query   = [],
+        array  $input   = [],
+        array  $files   = [],
+        array  $server  = [],
         string $content = ''
     ) {
-        $this->query = $query;
-        $this->input = $input;
-        $this->files = $files;
-        $this->server = $server;
+        $this->query   = $query;
+        $this->input   = $input;
+        $this->files   = $files;
+        $this->server  = $server;
         $this->headers = $this->parseHeaders($server);
         $this->content = $content;
     }
@@ -60,18 +61,21 @@ class Request
 
     public function url(): string
     {
-        $scheme = $this->isSecure() ? 'https' : 'http';
-        $host = $this->getValidatedHost();
-        return $scheme . '://' . $host . $this->uri();
+        return ($this->isSecure() ? 'https' : 'http') . '://' . $this->getValidatedHost() . $this->uri();
+    }
+
+    /**
+     * Return the raw request body (used by ValidateBodySize for SEC-6).
+     */
+    public function rawBody(): string
+    {
+        return $this->content;
     }
 
     protected function getValidatedHost(): string
     {
         $host = $this->server['HTTP_HOST'] ?? 'localhost';
-        if (!preg_match('/^[a-zA-Z0-9\-\.\[\]:]+$/', $host)) {
-            return 'localhost';
-        }
-        return $host;
+        return preg_match('/^[a-zA-Z0-9\-\.\[\]:]+$/', $host) ? $host : 'localhost';
     }
 
     public function isSecure(): bool
@@ -105,10 +109,7 @@ class Request
         return $this->server[$key] ?? $default;
     }
 
-    public function all(): array
-    {
-        return array_merge($this->query, $this->input);
-    }
+    public function all(): array  { return array_merge($this->query, $this->input); }
 
     public function only(array $keys): array
     {
@@ -130,15 +131,12 @@ class Request
         return $this->has($key) && $this->get($key) !== null && $this->get($key) !== '';
     }
 
-    public function query(string $key = null, mixed $default = null): mixed
+    public function query(?string $key = null, mixed $default = null): mixed
     {
-        if (is_null($key)) {
-            return $this->query;
-        }
-        return $this->query[$key] ?? $default;
+        return is_null($key) ? $this->query : ($this->query[$key] ?? $default);
     }
 
-    public function json(string $key = null, mixed $default = null): mixed
+    public function json(?string $key = null, mixed $default = null): mixed
     {
         if (strlen($this->content) > $this->maxBodySize) {
             throw new \OverflowException('JSON body exceeds maximum allowed size.');
@@ -149,10 +147,7 @@ class Request
             $data = [];
         }
 
-        if (is_null($key)) {
-            return $data;
-        }
-        return $data[$key] ?? $default;
+        return is_null($key) ? $data : ($data[$key] ?? $default);
     }
 
     public function header(string $key, mixed $default = null): mixed
@@ -197,10 +192,7 @@ class Request
         return $remoteAddr;
     }
 
-    public function userAgent(): ?string
-    {
-        return $this->header('user-agent');
-    }
+    public function userAgent(): ?string { return $this->header('user-agent'); }
 
     public function setAttribute(string $key, mixed $value): void
     {

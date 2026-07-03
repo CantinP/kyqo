@@ -33,7 +33,7 @@ if ($appEnv === 'production' && $debug === true) {
     die('[Kyqo] APP_DEBUG must be false in production.');
 }
 
-// Expose trusted proxies via constant
+// Trusted proxies
 $trustedProxies = array_filter(
     explode(',', $_ENV['TRUSTED_PROXIES'] ?? getenv('TRUSTED_PROXIES') ?? '')
 );
@@ -66,8 +66,8 @@ $app = new Application(
 
 /*
 |--------------------------------------------------------------------------
-| BUG FIX: Bind Router and Kernel into the container so that
-| $app->make(Kernel::class) can inject Router automatically.
+| Core bindings — only bind classes that actually exist.
+| FIX BUG-NEW-1: Removed non-existent interface / console bindings.
 |--------------------------------------------------------------------------
 */
 
@@ -82,32 +82,15 @@ $app->singleton(Kernel::class, function ($app) use ($debug) {
 
 /*
 |--------------------------------------------------------------------------
-| Bind Important Interfaces
+| Config values available via container
 |--------------------------------------------------------------------------
 */
 
-$app->singleton(
-    Kyqo\Http\Contracts\Kernel::class,
-    Kyqo\Http\Kernel::class
-);
+$securityConfig = file_exists(__DIR__ . '/../config/security.php')
+    ? require __DIR__ . '/../config/security.php'
+    : [];
 
-$app->singleton(
-    Kyqo\Console\Contracts\Kernel::class,
-    Kyqo\Console\Kernel::class
-);
-
-$app->singleton(
-    Kyqo\Core\Contracts\ExceptionHandler::class,
-    Kyqo\Core\Exceptions\Handler::class
-);
-
-/*
-|--------------------------------------------------------------------------
-| Share security & debug config with the container
-|--------------------------------------------------------------------------
-*/
-
-$app->instance('config.security', require __DIR__ . '/../config/security.php');
+$app->instance('config.security', $securityConfig);
 $app->instance('config.debug',    $debug);
 $app->instance('config.env',      $appEnv);
 

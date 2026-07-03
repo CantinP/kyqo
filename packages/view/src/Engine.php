@@ -4,40 +4,61 @@ namespace Kyqo\View;
 
 class Engine
 {
-    protected array $paths;
-    protected string $compiledPath;
-    protected bool $cache;
-    protected array $sections = [];
-    protected array $sectionStack = [];
-    protected ?string $layout = null;
-    protected array $layoutData = [];
+    protected array   $paths;
+    protected string  $compiledPath;
+    protected bool    $cache;
+    protected array   $sections     = [];
+    protected array   $sectionStack = [];
+    protected ?string $layout       = null;
+    protected array   $layoutData   = [];
 
     public function __construct(array $paths = [], string $compiledPath = '', bool $cache = true)
     {
-        $this->paths = array_map(fn ($p) => realpath($p) ?: $p, $paths);
+        $this->paths        = array_map(fn ($p) => realpath($p) ?: $p, $paths);
         $this->compiledPath = $compiledPath;
-        $this->cache = $cache;
+        $this->cache        = $cache;
     }
 
+    /**
+     * Render a template.
+     *
+     * MINOR FIX: Template is rendered in an isolated closure scope so that
+     *            variables named $path, $content, $layout, etc. in $data
+     *            do not clobber Engine internals.
+     */
     public function make(string $template, array $data = []): string
     {
-        $path = $this->findTemplate($template);
-
-        ob_start();
-        extract($data, EXTR_SKIP);
-        include $path;
-        $content = (string) ob_get_clean();
+        $path    = $this->findTemplate($template);
+        $content = $this->renderFile($path, $data);
 
         if ($this->layout) {
-            $layoutPath = $this->findTemplate($this->layout);
+            $layoutPath   = $this->findTemplate($this->layout);
             $this->layout = null;
-            ob_start();
-            extract(array_merge($data, $this->layoutData, ['content' => $content]), EXTR_SKIP);
-            include $layoutPath;
-            $content = (string) ob_get_clean();
+            $content      = $this->renderFile(
+                $layoutPath,
+                array_merge($data, $this->layoutData, ['content' => $content])
+            );
         }
 
         return $content;
+    }
+
+    /**
+     * Render a PHP file in an isolated scope.
+     * MINOR FIX: 'extract' runs inside a static closure — engine properties
+     *            ($this->sections, $this->layout, etc.) are inaccessible
+     *            from within the template, preventing variable collisions.
+     */
+    protected function renderFile(string $____path, array $____data): string
+    {
+        $____engine = $this;   // expose $engine to templates if needed
+
+        ob_start();
+        (static function () use ($____path, $____data, $____engine) {
+            extract($____data, EXTR_SKIP);
+            include $____path;
+        })();
+        return (string) ob_get_clean();
     }
 
     public function e(mixed $value): string
@@ -52,7 +73,7 @@ class Engine
 
     public function extends(string $layout, array $data = []): void
     {
-        $this->layout = $layout;
+        $this->layout     = $layout;
         $this->layoutData = $data;
     }
 
@@ -65,7 +86,11 @@ class Engine
     public function endSection(): void
     {
         $name = array_pop($this->sectionStack);
-        $this->sections[$name] = (string) ob_get_clean();
+        if ($name !== null) {
+            $this->sections[$name] = (string) ob_get_clean();
+        } else {
+            ob_end_clean(); // unmatched endSection — discard
+        }
     }
 
     public function yield(string $name, string $default = ''): string
@@ -91,7 +116,7 @@ class Engine
 
             foreach (['.kyqo.php', '.php', '.html'] as $ext) {
                 $candidate = $basePath . DIRECTORY_SEPARATOR . $templatePath . $ext;
-                $real = realpath($candidate);
+                $real      = realpath($candidate);
 
                 if ($real === false) {
                     continue;
