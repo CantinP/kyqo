@@ -5,17 +5,14 @@ namespace Kyqo\Core\Events;
 /**
  * Kyqo Event Dispatcher
  *
- * Registers event listeners, wildcards, and fires events throughout
- * the application. Inspired by Laravel's event system.
+ * MINOR-FINAL-5: Listener exceptions are caught and logged individually.
+ * Remaining listeners are still called even if one throws.
  */
 class Dispatcher
 {
     protected array $listeners = [];
     protected array $wildcards = [];
 
-    /**
-     * Register an event listener.
-     */
     public function listen(string|array $events, \Closure|string $listener): void
     {
         foreach ((array) $events as $event) {
@@ -28,7 +25,12 @@ class Dispatcher
     }
 
     /**
-     * Fire an event and return all responses.
+     * Fire an event and collect all listener responses.
+     *
+     * FIX MINOR-FINAL-5: Each listener is wrapped in a try/catch.
+     * A failing listener logs an error but does NOT interrupt remaining listeners.
+     *
+     * @return array  [['result' => mixed]|['error' => string], ...]
      */
     public function fire(string|object $event, mixed $payload = []): array
     {
@@ -37,24 +39,31 @@ class Dispatcher
         $responses = [];
 
         foreach ($this->getListeners($event) as $listener) {
-            $response = $listener($event, $payload);
-            $responses[] = $response;
+            try {
+                $responses[] = ['result' => $listener($event, $payload)];
+            } catch (\Throwable $e) {
+                error_log(
+                    sprintf(
+                        '[Kyqo\Events] Listener threw %s for event "%s": %s in %s:%d',
+                        get_class($e),
+                        $event,
+                        $e->getMessage(),
+                        $e->getFile(),
+                        $e->getLine()
+                    )
+                );
+                $responses[] = ['error' => $e->getMessage()];
+            }
         }
 
         return $responses;
     }
 
-    /**
-     * Determine if any listeners are registered for the event.
-     */
     public function hasListeners(string $event): bool
     {
         return !empty($this->listeners[$event]) || $this->hasWildcardListeners($event);
     }
 
-    /**
-     * Get all listeners for an event including wildcards.
-     */
     public function getListeners(string $event): array
     {
         $listeners = $this->listeners[$event] ?? [];

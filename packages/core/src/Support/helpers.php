@@ -21,9 +21,9 @@ if (!function_exists('env')) {
             return $default;
         }
         return match (strtolower((string) $value)) {
-            'true', '(true)'   => true,
+            'true',  '(true)'  => true,
             'false', '(false)' => false,
-            'null', '(null)'   => null,
+            'null',  '(null)'  => null,
             'empty', '(empty)' => '',
             default            => $value,
         };
@@ -41,52 +41,31 @@ if (!function_exists('config')) {
 }
 
 if (!function_exists('base_path')) {
-    function base_path(string $path = ''): string
-    {
-        return app()->basePath($path);
-    }
+    function base_path(string $path = ''): string { return app()->basePath($path); }
 }
 
 if (!function_exists('app_path')) {
-    function app_path(string $path = ''): string
-    {
-        return app()->appPath($path);
-    }
+    function app_path(string $path = ''): string { return app()->appPath($path); }
 }
 
 if (!function_exists('config_path')) {
-    function config_path(string $path = ''): string
-    {
-        return app()->configPath($path);
-    }
+    function config_path(string $path = ''): string { return app()->configPath($path); }
 }
 
 if (!function_exists('database_path')) {
-    function database_path(string $path = ''): string
-    {
-        return app()->databasePath($path);
-    }
+    function database_path(string $path = ''): string { return app()->databasePath($path); }
 }
 
 if (!function_exists('resource_path')) {
-    function resource_path(string $path = ''): string
-    {
-        return app()->resourcePath($path);
-    }
+    function resource_path(string $path = ''): string { return app()->resourcePath($path); }
 }
 
 if (!function_exists('storage_path')) {
-    function storage_path(string $path = ''): string
-    {
-        return app()->storagePath($path);
-    }
+    function storage_path(string $path = ''): string { return app()->storagePath($path); }
 }
 
 if (!function_exists('public_path')) {
-    function public_path(string $path = ''): string
-    {
-        return app()->publicPath($path);
-    }
+    function public_path(string $path = ''): string { return app()->publicPath($path); }
 }
 
 if (!function_exists('view')) {
@@ -102,7 +81,7 @@ if (!function_exists('redirect')) {
         if (is_null($url)) {
             return app('redirect');
         }
-        return app('redirect')->to($url, $status);
+        return \Kyqo\Http\Response::redirect($url, $status);
     }
 }
 
@@ -112,7 +91,7 @@ if (!function_exists('response')) {
         if (func_num_args() === 0) {
             return app('response');
         }
-        return app('response')->make($content, $status, $headers);
+        return \Kyqo\Http\Response::make((string) $content, $status, $headers);
     }
 }
 
@@ -158,10 +137,7 @@ if (!function_exists('abort')) {
 }
 
 if (!function_exists('now')) {
-    function now(): \DateTimeImmutable
-    {
-        return new \DateTimeImmutable();
-    }
+    function now(): \DateTimeImmutable { return new \DateTimeImmutable(); }
 }
 
 if (!function_exists('collect')) {
@@ -171,11 +147,21 @@ if (!function_exists('collect')) {
     }
 }
 
+/**
+ * FIX SEC-FINAL-2: dd() and dump() are disabled in production.
+ * They will throw a RuntimeException if called outside of local/testing environments.
+ */
 if (!function_exists('dd')) {
     function dd(mixed ...$vars): never
     {
+        $env = strtolower((string) (app()->environment() ?? 'production'));
+        if (!in_array($env, ['local', 'development', 'testing'], true)) {
+            throw new \RuntimeException(
+                'dd() is disabled in production. Set APP_ENV=local to use debug helpers.'
+            );
+        }
         foreach ($vars as $var) {
-            echo '<pre>';
+            echo '<pre style="background:#1e1e2e;color:#cdd6f4;padding:1rem;border-radius:8px;margin:1rem 0;">';
             var_dump($var);
             echo '</pre>';
         }
@@ -186,8 +172,13 @@ if (!function_exists('dd')) {
 if (!function_exists('dump')) {
     function dump(mixed ...$vars): void
     {
+        $env = strtolower((string) (app()->environment() ?? 'production'));
+        if (!in_array($env, ['local', 'development', 'testing'], true)) {
+            // Silently no-op in production rather than crashing
+            return;
+        }
         foreach ($vars as $var) {
-            echo '<pre>';
+            echo '<pre style="background:#1e1e2e;color:#cdd6f4;padding:1rem;border-radius:8px;margin:1rem 0;">';
             var_dump($var);
             echo '</pre>';
         }
