@@ -2,12 +2,6 @@
 
 namespace Kyqo\Http;
 
-/**
- * Kyqo HTTP Request
- *
- * Represents and wraps an incoming HTTP request. Provides clean access
- * to inputs, headers, files, query params, body, method and URI.
- */
 class Request
 {
     protected array $query;
@@ -16,6 +10,9 @@ class Request
     protected array $server;
     protected array $headers;
     protected string $content;
+    protected array $customAttributes = [];
+    protected int $maxBodySize = 10 * 1024 * 1024;
+    protected array $allowedMethods = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
 
     public function __construct(
         array $query = [],
@@ -24,17 +21,14 @@ class Request
         array $server = [],
         string $content = ''
     ) {
-        $this->query   = $query;
-        $this->input   = $input;
-        $this->files   = $files;
-        $this->server  = $server;
+        $this->query = $query;
+        $this->input = $input;
+        $this->files = $files;
+        $this->server = $server;
         $this->headers = $this->parseHeaders($server);
         $this->content = $content;
     }
 
-    /**
-     * Create a request from PHP superglobals.
-     */
     public static function capture(): static
     {
         return new static(
@@ -48,7 +42,8 @@ class Request
 
     public function method(): string
     {
-        return strtoupper($this->server['REQUEST_METHOD'] ?? 'GET');
+        $method = strtoupper($this->server['REQUEST_METHOD'] ?? 'GET');
+        return in_array($method, $this->allowedMethods, true) ? $method : 'GET';
     }
 
     public function uri(): string
@@ -66,8 +61,17 @@ class Request
     public function url(): string
     {
         $scheme = $this->isSecure() ? 'https' : 'http';
-        $host   = $this->server['HTTP_HOST'] ?? 'localhost';
+        $host = $this->getValidatedHost();
         return $scheme . '://' . $host . $this->uri();
+    }
+
+    protected function getValidatedHost(): string
+    {
+        $host = $this->server['HTTP_HOST'] ?? 'localhost';
+        if (!preg_match('/^[a-zA-Z0-9\-\.\[\]:]+$/', $host)) {
+            return 'localhost';
+        }
+        return $host;
     }
 
     public function isSecure(): bool
@@ -94,6 +98,11 @@ class Request
     public function get(string $key, mixed $default = null): mixed
     {
         return $this->input[$key] ?? $this->query[$key] ?? $default;
+    }
+
+    public function server(string $key, mixed $default = null): mixed
+    {
+        return $this->server[$key] ?? $default;
     }
 
     public function all(): array
@@ -123,14 +132,26 @@ class Request
 
     public function query(string $key = null, mixed $default = null): mixed
     {
-        if (is_null($key)) return $this->query;
+        if (is_null($key)) {
+            return $this->query;
+        }
         return $this->query[$key] ?? $default;
     }
 
     public function json(string $key = null, mixed $default = null): mixed
     {
-        $data = json_decode($this->content, true) ?? [];
-        if (is_null($key)) return $data;
+        if (strlen($this->content) > $this->maxBodySize) {
+            throw new \OverflowException('JSON body exceeds maximum allowed size.');
+        }
+
+        $data = json_decode($this->content, true);
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        if (is_null($key)) {
+            return $data;
+        }
         return $data[$key] ?? $default;
     }
 
@@ -143,19 +164,52 @@ class Request
     {
         $auth = $this->header('authorization', '');
         if (str_starts_with($auth, 'Bearer ')) {
-            return substr($auth, 7);
+            $token = substr($auth, 7);
+            if (preg_match('/^[A-Za-z0-9\-_\.~\+\/]+=*$/', $token)) {
+                return $token;
+            }
         }
         return null;
     }
 
     public function ip(): ?string
     {
-        return $this->server['REMOTE_ADDR'] ?? null;
+        $remoteAddr = $this->server['REMOTE_ADDR'] ?? null;
+
+        if ($remoteAddr && !filter_var($remoteAddr, FILTER_VALIDATE_IP)) {
+            return null;
+        }
+
+        $trustedProxies = defined('KYQO_TRUSTED_PROXIES') ? KYQO_TRUSTED_PROXIES : [];
+
+        if (!empty($trustedProxies) && $remoteAddr && in_array($remoteAddr, $trustedProxies, true)) {
+            $forwarded = $this->header('x-forwarded-for');
+            if ($forwarded) {
+                $ips = array_map('trim', explode(',', $forwarded));
+                foreach ($ips as $ip) {
+                    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                        return $ip;
+                    }
+                }
+            }
+        }
+
+        return $remoteAddr;
     }
 
     public function userAgent(): ?string
     {
         return $this->header('user-agent');
+    }
+
+    public function setAttribute(string $key, mixed $value): void
+    {
+        $this->customAttributes[$key] = $value;
+    }
+
+    public function getAttribute(string $key, mixed $default = null): mixed
+    {
+        return $this->customAttributes[$key] ?? $default;
     }
 
     protected function parseHeaders(array $server): array
@@ -165,7 +219,7 @@ class Request
             if (str_starts_with($key, 'HTTP_')) {
                 $header = strtolower(str_replace('_', '-', substr($key, 5)));
                 $headers[$header] = $value;
-            } elseif (in_array($key, ['CONTENT_TYPE', 'CONTENT_LENGTH'])) {
+            } elseif (in_array($key, ['CONTENT_TYPE', 'CONTENT_LENGTH'], true)) {
                 $headers[strtolower(str_replace('_', '-', $key))] = $value;
             }
         }

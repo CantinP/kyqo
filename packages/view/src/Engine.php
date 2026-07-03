@@ -2,19 +2,11 @@
 
 namespace Kyqo\View;
 
-/**
- * Kyqo View Engine
- *
- * Compiles and renders template files (.kyqo.php) with data injection,
- * layout support, section definitions, partials inclusion, and components.
- * Simple, fast, PHP-native template engine.
- */
 class Engine
 {
     protected array $paths;
     protected string $compiledPath;
     protected bool $cache;
-
     protected array $sections = [];
     protected array $sectionStack = [];
     protected ?string $layout = null;
@@ -22,14 +14,11 @@ class Engine
 
     public function __construct(array $paths = [], string $compiledPath = '', bool $cache = true)
     {
-        $this->paths        = $paths;
+        $this->paths = array_map(fn ($p) => realpath($p) ?: $p, $paths);
         $this->compiledPath = $compiledPath;
-        $this->cache        = $cache;
+        $this->cache = $cache;
     }
 
-    /**
-     * Render a template with data.
-     */
     public function make(string $template, array $data = []): string
     {
         $path = $this->findTemplate($template);
@@ -37,7 +26,7 @@ class Engine
         ob_start();
         extract($data, EXTR_SKIP);
         include $path;
-        $content = ob_get_clean();
+        $content = (string) ob_get_clean();
 
         if ($this->layout) {
             $layoutPath = $this->findTemplate($this->layout);
@@ -45,68 +34,75 @@ class Engine
             ob_start();
             extract(array_merge($data, $this->layoutData, ['content' => $content]), EXTR_SKIP);
             include $layoutPath;
-            $content = ob_get_clean();
+            $content = (string) ob_get_clean();
         }
 
         return $content;
     }
 
-    /**
-     * Render a partial/include within a template.
-     */
+    public function e(mixed $value): string
+    {
+        return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
     public function partial(string $template, array $data = []): string
     {
         return $this->make($template, $data);
     }
 
-    /**
-     * Set the layout for the current template.
-     */
     public function extends(string $layout, array $data = []): void
     {
-        $this->layout     = $layout;
+        $this->layout = $layout;
         $this->layoutData = $data;
     }
 
-    /**
-     * Start a named section.
-     */
     public function section(string $name): void
     {
         $this->sectionStack[] = $name;
         ob_start();
     }
 
-    /**
-     * End a named section.
-     */
     public function endSection(): void
     {
         $name = array_pop($this->sectionStack);
-        $this->sections[$name] = ob_get_clean();
+        $this->sections[$name] = (string) ob_get_clean();
     }
 
-    /**
-     * Output a named section.
-     */
     public function yield(string $name, string $default = ''): string
     {
         return $this->sections[$name] ?? $default;
     }
 
-    /**
-     * Find a template file on disk.
-     */
     protected function findTemplate(string $template): string
     {
-        $template = str_replace('.', DIRECTORY_SEPARATOR, $template);
+        if (!preg_match('/^[a-zA-Z0-9._\/-]+$/', $template)) {
+            throw new \InvalidArgumentException("Invalid template name [{$template}].");
+        }
 
-        foreach ($this->paths as $path) {
+        if (str_contains($template, '..')) {
+            throw new \RuntimeException("Path traversal detected for template [{$template}].");
+        }
+
+        $templatePath = str_replace('.', DIRECTORY_SEPARATOR, $template);
+        $templatePath = preg_replace('#/+#', '/', $templatePath);
+
+        foreach ($this->paths as $basePath) {
+            $basePath = rtrim((string) $basePath, DIRECTORY_SEPARATOR);
+
             foreach (['.kyqo.php', '.php', '.html'] as $ext) {
-                $file = rtrim($path, '/') . '/' . $template . $ext;
-                if (file_exists($file)) {
-                    return $file;
+                $candidate = $basePath . DIRECTORY_SEPARATOR . $templatePath . $ext;
+                $real = realpath($candidate);
+
+                if ($real === false) {
+                    continue;
                 }
+
+                $allowedBase = realpath($basePath) ?: $basePath;
+                if (!str_starts_with($real, $allowedBase . DIRECTORY_SEPARATOR) && $real !== $allowedBase) {
+                    throw new \RuntimeException("Path traversal detected for template [{$template}].");
+                }
+
+                return $real;
             }
         }
 
