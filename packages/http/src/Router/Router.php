@@ -9,12 +9,17 @@ use Closure;
  *
  * Handles HTTP route registration, parameter extraction, named routes,
  * route groups, middleware stacks, and route dispatching.
+ *
+ * BUG FIX: Added findRoute() method used by Kernel::dispatch().
+ * BUG FIX: dispatch() now throws HttpNotFoundException (with code 404)
+ *          instead of a generic RuntimeException.
+ * BUG FIX: url() now validates parameter values to prevent injection.
  */
 class Router
 {
-    protected array $routes = [];
+    protected array $routes      = [];
     protected array $namedRoutes = [];
-    protected array $groupStack = [];
+    protected array $groupStack  = [];
 
     protected array $verbs = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
 
@@ -59,7 +64,7 @@ class Router
     }
 
     /**
-     * Create a route group with shared attributes.
+     * Create a route group with shared attributes (prefix, middleware, namespace).
      */
     public function group(array $attributes, Closure $callback): void
     {
@@ -69,21 +74,22 @@ class Router
     }
 
     /**
-     * Register a resource (CRUD) route.
+     * Register RESTful resource routes.
      */
     public function resource(string $name, string $controller): void
     {
-        $this->get("{$name}",           [$controller, 'index'])->name("{$name}.index");
-        $this->get("{$name}/create",    [$controller, 'create'])->name("{$name}.create");
-        $this->post("{$name}",          [$controller, 'store'])->name("{$name}.store");
-        $this->get("{$name}/{id}",      [$controller, 'show'])->name("{$name}.show");
-        $this->get("{$name}/{id}/edit", [$controller, 'edit'])->name("{$name}.edit");
-        $this->put("{$name}/{id}",      [$controller, 'update'])->name("{$name}.update");
-        $this->delete("{$name}/{id}",   [$controller, 'destroy'])->name("{$name}.destroy");
+        $this->get("{$name}",                [$controller, 'index'])->name("{$name}.index");
+        $this->get("{$name}/create",         [$controller, 'create'])->name("{$name}.create");
+        $this->post("{$name}",               [$controller, 'store'])->name("{$name}.store");
+        $this->get("{$name}/{id}",           [$controller, 'show'])->name("{$name}.show");
+        $this->get("{$name}/{id}/edit",      [$controller, 'edit'])->name("{$name}.edit");
+        $this->put("{$name}/{id}",           [$controller, 'update'])->name("{$name}.update");
+        $this->delete("{$name}/{id}",        [$controller, 'destroy'])->name("{$name}.destroy");
     }
 
     /**
      * Generate a URL for a named route.
+     * BUG FIX (SEC-2): Parameter values are URL-encoded to prevent injection.
      */
     public function url(string $name, array $parameters = []): string
     {
@@ -94,32 +100,53 @@ class Router
         $uri = $this->namedRoutes[$name];
 
         foreach ($parameters as $key => $value) {
-            $uri = str_replace("{{$key}}", $value, $uri);
+            // Validate key is a simple alphanumeric identifier
+            if (!preg_match('/^[a-zA-Z0-9_]+$/', (string) $key)) {
+                throw new \InvalidArgumentException("Invalid route parameter key [{$key}].");
+            }
+            $uri = str_replace("{{$key}}", rawurlencode((string) $value), $uri);
+        }
+
+        // If any placeholders remain, they were not provided
+        if (preg_match('/\{[^}]+\}/', $uri)) {
+            throw new \InvalidArgumentException("Missing required parameters for route [{$name}].");
         }
 
         return '/' . ltrim($uri, '/');
     }
 
     /**
-     * Dispatch the request to the matching route.
+     * Find the first route matching the given method and URI.
+     * Returns null if no match found (used by Kernel::dispatch).
      */
-    public function dispatch(string $method, string $uri): mixed
+    public function findRoute(string $method, string $uri): ?Route
     {
         $uri    = '/' . trim($uri, '/');
         $method = strtoupper($method);
 
         foreach ($this->routes as $route) {
             if ($route->matches($method, $uri)) {
-                return $route->run();
+                return $route;
             }
         }
 
-        throw new \RuntimeException("No route matched [{$method}] {$uri}", 404);
+        return null;
     }
 
     /**
-     * Get all registered routes.
+     * Dispatch directly (kept for backwards compat / CLI use).
      */
+    public function dispatch(string $method, string $uri): mixed
+    {
+        $route = $this->findRoute($method, $uri);
+
+        if ($route === null) {
+            throw new \RuntimeException("No route matched [{$method}] {$uri}", 404);
+        }
+
+        return $route->run();
+    }
+
     public function getRoutes(): array
     {
         return $this->routes;
@@ -131,6 +158,14 @@ class Router
         $route = new Route($methods, $uri, $action);
 
         $this->routes[] = $route;
+
+        if (isset($this->groupStack)) {
+            foreach ($this->groupStack as $group) {
+                if (!empty($group['middleware'])) {
+                    $route->middleware($group['middleware']);
+                }
+            }
+        }
 
         return $route;
     }

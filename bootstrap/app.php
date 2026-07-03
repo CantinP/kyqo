@@ -1,14 +1,13 @@
 <?php
 
 use Kyqo\Core\Application;
+use Kyqo\Http\Router\Router;
+use Kyqo\Http\Kernel;
 
 /*
 |--------------------------------------------------------------------------
 | Production Safety Guard
 |--------------------------------------------------------------------------
-| Ensure APP_KEY is set and has minimum length before the app boots.
-| Refuse to start in production with APP_DEBUG=true.
-|
 */
 
 $appKey = $_ENV['APP_KEY'] ?? getenv('APP_KEY') ?? '';
@@ -31,22 +30,24 @@ if ($keyBytes === false || strlen($keyBytes) < 32) {
 if ($appEnv === 'production' && $debug === true) {
     http_response_code(500);
     header('Content-Type: text/plain');
-    die('[Kyqo] APP_DEBUG must be false in production. Set APP_DEBUG=false in your .env file.');
+    die('[Kyqo] APP_DEBUG must be false in production.');
 }
 
-// Expose trusted proxies to the rest of the framework via constant
-$trustedProxies = array_filter(explode(',', $_ENV['TRUSTED_PROXIES'] ?? getenv('TRUSTED_PROXIES') ?? ''));
+// Expose trusted proxies via constant
+$trustedProxies = array_filter(
+    explode(',', $_ENV['TRUSTED_PROXIES'] ?? getenv('TRUSTED_PROXIES') ?? '')
+);
 if (!defined('KYQO_TRUSTED_PROXIES')) {
     define('KYQO_TRUSTED_PROXIES', $trustedProxies);
 }
 
-// Start session securely
+// Secure session boot
 if (session_status() === PHP_SESSION_NONE) {
     session_set_cookie_params([
         'lifetime' => 0,
         'path'     => '/',
         'domain'   => '',
-        'secure'   => $appEnv === 'production',
+        'secure'   => ($appEnv === 'production'),
         'httponly' => true,
         'samesite' => 'Strict',
     ]);
@@ -62,6 +63,22 @@ if (session_status() === PHP_SESSION_NONE) {
 $app = new Application(
     $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__)
 );
+
+/*
+|--------------------------------------------------------------------------
+| BUG FIX: Bind Router and Kernel into the container so that
+| $app->make(Kernel::class) can inject Router automatically.
+|--------------------------------------------------------------------------
+*/
+
+$app->singleton(Router::class, fn () => new Router());
+
+$app->singleton(Kernel::class, function ($app) use ($debug) {
+    return new Kernel(
+        $app->make(Router::class),
+        ['debug' => $debug]
+    );
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -86,12 +103,24 @@ $app->singleton(
 
 /*
 |--------------------------------------------------------------------------
-| Share security config with the container
+| Share security & debug config with the container
 |--------------------------------------------------------------------------
 */
 
 $app->instance('config.security', require __DIR__ . '/../config/security.php');
 $app->instance('config.debug',    $debug);
 $app->instance('config.env',      $appEnv);
+
+/*
+|--------------------------------------------------------------------------
+| Load application routes
+|--------------------------------------------------------------------------
+*/
+
+$router = $app->make(Router::class);
+
+if (file_exists($routesFile = __DIR__ . '/../routes/web.php')) {
+    require $routesFile;
+}
 
 return $app;
