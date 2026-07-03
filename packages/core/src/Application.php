@@ -9,20 +9,16 @@ use Kyqo\Core\Events\Dispatcher;
 /**
  * The Kyqo Application.
  *
- * MINOR-V4-1 FIX: ViewEngine, CacheManager, QueueManager are bound lazily
- * via closures — NO top-level `use` import of these classes.
- * If a package is absent, the app boots fine; the error surfaces only
- * when the specific service is first resolved.
- *
- * BUG-V4-1 FIX: CacheManager and QueueManager are now registered with their
- * real configs (cache.php and queue.php) as singletons.
+ * All framework services are registered as singletons here.
+ * Every binding uses a lazy closure so missing packages
+ * surface an error only when the service is first resolved.
  */
 class Application extends Container
 {
     public const VERSION = '0.1.0';
 
     protected string $basePath;
-    protected bool   $bootstrapped    = false;
+    protected bool   $bootstrapped     = false;
     protected array  $serviceProviders = [];
 
     public function __construct(string $basePath)
@@ -111,7 +107,7 @@ class Application extends Container
 
     protected function registerCoreServices(): void
     {
-        // 1. Config — load all config/*.php files immediately
+        // 1. Config
         $config = new ConfigRepository();
         $configPath = $this->configPath();
         if (is_dir($configPath)) {
@@ -125,30 +121,35 @@ class Application extends Container
         $this->instance(Dispatcher::class, $dispatcher);
         $this->instance('events', $dispatcher);
 
-        // 3. Auth — real config from config/auth.php
+        // 3. Database
+        $dbConfig = $config->get('database', []);
+        $this->singleton('db', function () use ($dbConfig) {
+            return new \Kyqo\Database\DatabaseManager($dbConfig);
+        });
+        $this->singleton(\Kyqo\Database\DatabaseManager::class, fn () => $this->make('db'));
+
+        // 4. Auth
         $authConfig = $config->get('auth', []);
         $this->singleton('auth', function () use ($authConfig) {
             return new \Kyqo\Auth\AuthManager($authConfig);
         });
         $this->singleton(\Kyqo\Auth\AuthManager::class, fn () => $this->make('auth'));
 
-        // 4. Cache — real config from config/cache.php
-        //    BUG-V4-1 FIX: bound as singleton with real config
+        // 5. Cache
         $cacheConfig = $config->get('cache', []);
         $this->singleton('cache', function () use ($cacheConfig) {
             return new \Kyqo\Cache\CacheManager($cacheConfig);
         });
         $this->singleton(\Kyqo\Cache\CacheManager::class, fn () => $this->make('cache'));
 
-        // 5. Queue — real config from config/queue.php
-        //    BUG-V4-1 FIX: bound as singleton with real config
+        // 6. Queue
         $queueConfig = $config->get('queue', []);
         $this->singleton('queue', function () use ($queueConfig) {
             return new \Kyqo\Queue\QueueManager($queueConfig);
         });
         $this->singleton(\Kyqo\Queue\QueueManager::class, fn () => $this->make('queue'));
 
-        // 6. View Engine — lazy, no top-level import (MINOR-V4-1 FIX)
+        // 7. View Engine (lazy, no top-level import)
         $this->singleton('view', function () use ($config) {
             $paths    = (array)  ($config->get('view.paths')    ?? []);
             $compiled = (string) ($config->get('view.compiled') ?? sys_get_temp_dir() . '/kyqo_views');
@@ -156,21 +157,42 @@ class Application extends Container
             return new \Kyqo\View\Engine($paths, $compiled, $cache);
         });
         $this->singleton(\Kyqo\View\Engine::class, fn () => $this->make('view'));
+
+        // 8. Request (captured from globals)
+        $this->singleton('request', function () {
+            return \Kyqo\Http\Request::capture();
+        });
+        $this->singleton(\Kyqo\Http\Request::class, fn () => $this->make('request'));
+
+        // 9. Session store
+        $this->singleton('session', function () {
+            return new \Kyqo\Http\Session\Store();
+        });
+        $this->singleton(\Kyqo\Http\Session\Store::class, fn () => $this->make('session'));
+
+        // 10. URL Generator
+        $this->singleton('url', function () {
+            return new \Kyqo\Http\UrlGenerator(
+                $this->make(\Kyqo\Http\Router\Router::class),
+                $this->make('request')
+            );
+        });
+        $this->singleton(\Kyqo\Http\UrlGenerator::class, fn () => $this->make('url'));
     }
 
-    /**
-     * Register short-key aliases.
-     * All singletons already bound above — aliases simply add FQCN -> short-key direction.
-     */
     protected function registerCoreAliases(): void
     {
         $aliases = [
-            ConfigRepository::class             => 'config',
-            Dispatcher::class                   => 'events',
-            \Kyqo\Auth\AuthManager::class       => 'auth',
-            \Kyqo\Cache\CacheManager::class     => 'cache',
-            \Kyqo\Queue\QueueManager::class     => 'queue',
-            \Kyqo\View\Engine::class            => 'view',
+            ConfigRepository::class                   => 'config',
+            Dispatcher::class                         => 'events',
+            \Kyqo\Database\DatabaseManager::class    => 'db',
+            \Kyqo\Auth\AuthManager::class             => 'auth',
+            \Kyqo\Cache\CacheManager::class           => 'cache',
+            \Kyqo\Queue\QueueManager::class           => 'queue',
+            \Kyqo\View\Engine::class                  => 'view',
+            \Kyqo\Http\Request::class                 => 'request',
+            \Kyqo\Http\Session\Store::class           => 'session',
+            \Kyqo\Http\UrlGenerator::class            => 'url',
         ];
 
         foreach ($aliases as $abstract => $shortKey) {

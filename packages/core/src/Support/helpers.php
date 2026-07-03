@@ -79,7 +79,7 @@ if (!function_exists('redirect')) {
     function redirect(string $url = null, int $status = 302): mixed
     {
         if (is_null($url)) {
-            return app('redirect');
+            return app('url');
         }
         return \Kyqo\Http\Response::redirect($url, $status);
     }
@@ -129,10 +129,17 @@ if (!function_exists('route')) {
     }
 }
 
+if (!function_exists('url')) {
+    function url(string $path = '', array $query = []): string
+    {
+        return app('url')->to($path, $query);
+    }
+}
+
 if (!function_exists('abort')) {
     function abort(int $code, string $message = '', array $headers = []): never
     {
-        app()->abort($code, $message, $headers);
+        throw new \RuntimeException($message ?: 'Abort', $code);
     }
 }
 
@@ -147,10 +154,6 @@ if (!function_exists('collect')) {
     }
 }
 
-/**
- * FIX SEC-FINAL-2: dd() and dump() are disabled in production.
- * They will throw a RuntimeException if called outside of local/testing environments.
- */
 if (!function_exists('dd')) {
     function dd(mixed ...$vars): never
     {
@@ -174,7 +177,6 @@ if (!function_exists('dump')) {
     {
         $env = strtolower((string) (app()->environment() ?? 'production'));
         if (!in_array($env, ['local', 'development', 'testing'], true)) {
-            // Silently no-op in production rather than crashing
             return;
         }
         foreach ($vars as $var) {

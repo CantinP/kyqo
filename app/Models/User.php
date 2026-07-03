@@ -11,33 +11,32 @@ class User extends Model implements Authenticatable
 {
     use HasPassword, HasTokens;
 
-    /**
-     * The table associated with the model.
-     */
     protected string $table = 'users';
 
-    /**
-     * The attributes that are mass assignable.
-     */
     protected array $fillable = [
         'name',
         'email',
         'password',
     ];
 
-    /**
-     * The attributes that should be hidden for serialization.
-     */
     protected array $hidden = [
         'password',
         'remember_token',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected array $casts = [
         'email_verified_at' => 'datetime',
-        'password'          => 'hashed',
     ];
+
+    // ---- Authenticatable implementation ------------------------------------
+
+    public function getAuthIdentifier(): mixed
+    {
+        return $this->attributes[$this->primaryKey] ?? null;
+    }
+
+    public function getAuthIdentifierName(): string
+    {
+        return $this->primaryKey;
+    }
 }

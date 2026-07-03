@@ -33,7 +33,6 @@ if ($appEnv === 'production' && $debug === true) {
     die('[Kyqo] APP_DEBUG must be false in production.');
 }
 
-// Trusted proxies
 $trustedProxies = array_filter(
     explode(',', $_ENV['TRUSTED_PROXIES'] ?? getenv('TRUSTED_PROXIES') ?? '')
 );
@@ -41,7 +40,6 @@ if (!defined('KYQO_TRUSTED_PROXIES')) {
     define('KYQO_TRUSTED_PROXIES', $trustedProxies);
 }
 
-// Secure session boot
 if (session_status() === PHP_SESSION_NONE) {
     session_set_cookie_params([
         'lifetime' => 0,
@@ -66,8 +64,7 @@ $app = new Application(
 
 /*
 |--------------------------------------------------------------------------
-| Core bindings — only bind classes that actually exist.
-| FIX BUG-NEW-1: Removed non-existent interface / console bindings.
+| HTTP Kernel + Router
 |--------------------------------------------------------------------------
 */
 
@@ -98,11 +95,16 @@ $app->instance('config.env',      $appEnv);
 |--------------------------------------------------------------------------
 | Load application routes
 |--------------------------------------------------------------------------
+| Route Facade is now available — routes/web.php and routes/api.php
+| can use Route::get(), Route::post(), etc. directly.
+|--------------------------------------------------------------------------
 */
 
-$router = $app->make(Router::class);
-
 if (file_exists($routesFile = __DIR__ . '/../routes/web.php')) {
+    require $routesFile;
+}
+
+if (file_exists($routesFile = __DIR__ . '/../routes/api.php')) {
     require $routesFile;
 }
 
