@@ -7,15 +7,10 @@ use Kyqo\Database\Connection;
 /**
  * Schema builder — create, modify, and drop tables.
  *
- * Usage:
- *   Schema::create('users', function (Blueprint $t) {
- *       $t->id();
- *       $t->string('email')->unique();
- *       $t->timestamps();
- *   });
- *
- *   Schema::drop('users');
- *   Schema::hasTable('users');  // bool
+ * FIX #3: drop() and dropIfExists() now use quoteIdentifier() to prevent
+ *         SQL injection via table name interpolation.
+ * FIX #8: compileCreate() is now driver-aware (MySQL backtick/InnoDB vs
+ *         SQLite/PostgreSQL double-quote, no ENGINE clause).
  */
 class SchemaBuilder
 {
@@ -26,10 +21,6 @@ class SchemaBuilder
         $blueprint = new Blueprint($table, true);
         $callback($blueprint);
         $this->connection->statement($this->compileCreate($blueprint));
-
-        foreach ($blueprint->foreign as $fk) {
-            // Foreign keys are compiled inline for create; nothing extra needed.
-        }
     }
 
     public function table(string $table, callable $callback): void
@@ -41,14 +32,17 @@ class SchemaBuilder
         }
     }
 
+    /**
+     * FIX #3: use quoteIdentifier() — never raw interpolation.
+     */
     public function drop(string $table): void
     {
-        $this->connection->statement('DROP TABLE `' . $table . '`');
+        $this->connection->statement('DROP TABLE ' . $this->quoteIdentifier($table));
     }
 
     public function dropIfExists(string $table): void
     {
-        $this->connection->statement('DROP TABLE IF EXISTS `' . $table . '`');
+        $this->connection->statement('DROP TABLE IF EXISTS ' . $this->quoteIdentifier($table));
     }
 
     public function hasTable(string $table): bool
@@ -72,7 +66,7 @@ class SchemaBuilder
     {
         $driver = $this->connection->getDriver();
         if ($driver === 'sqlite') {
-            $rows = $this->connection->select("PRAGMA table_info(`{$table}`)");
+            $rows = $this->connection->select("PRAGMA table_info(" . $this->quoteIdentifier($table) . ")");
             return in_array($column, array_column($rows, 'name'), true);
         }
         $row = $this->connection->selectOne(
@@ -84,33 +78,72 @@ class SchemaBuilder
 
     // ---- SQL compilation ----------------------------------------------------
 
+    /**
+     * FIX #8: driver-aware compilation.
+     * - MySQL/MariaDB : backtick quotes + ENGINE=InnoDB
+     * - SQLite        : double-quote identifiers, no ENGINE
+     * - PostgreSQL    : double-quote identifiers, no ENGINE
+     */
     protected function compileCreate(Blueprint $bp): string
     {
+        $driver = $this->connection->getDriver();
+        $q      = $driver === 'mysql' ? '`' : '"';
+
         $parts = [];
         foreach ($bp->columns as $col) {
-            $parts[] = $col->toSql();
+            $parts[] = $col->toSql($driver);
         }
         foreach ($bp->indexes as $idx) {
+            // Skip MySQL-specific index syntax for non-MySQL drivers
+            if ($driver !== 'mysql' && str_starts_with($idx, 'KEY ')) {
+                continue;
+            }
             $parts[] = $idx;
         }
         foreach ($bp->foreign as $fk) {
-            $parts[] = $fk->toSql();
+            $parts[] = $fk->toSql($driver);
         }
-        return 'CREATE TABLE `' . $bp->table . '` (' . "\n  " . implode(",\n  ", $parts) . "\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+
+        $sql = 'CREATE TABLE ' . $q . $bp->table . $q
+             . ' (' . "\n  " . implode(",\n  ", $parts) . "\n)";
+
+        if ($driver === 'mysql') {
+            $sql .= ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci';
+        }
+
+        return $sql;
     }
 
     protected function compileAlter(Blueprint $bp): array
     {
-        $sqls = [];
+        $driver = $this->connection->getDriver();
+        $q      = $driver === 'mysql' ? '`' : '"';
+        $sqls   = [];
+
         foreach ($bp->columns as $col) {
-            $sqls[] = 'ALTER TABLE `' . $bp->table . '` ADD COLUMN ' . $col->toSql();
+            $sqls[] = 'ALTER TABLE ' . $q . $bp->table . $q . ' ADD COLUMN ' . $col->toSql($driver);
         }
         foreach ($bp->indexes as $idx) {
-            $sqls[] = 'ALTER TABLE `' . $bp->table . '` ADD ' . $idx;
+            $sqls[] = 'ALTER TABLE ' . $q . $bp->table . $q . ' ADD ' . $idx;
         }
         foreach ($bp->foreign as $fk) {
-            $sqls[] = 'ALTER TABLE `' . $bp->table . '` ADD ' . $fk->toSql();
+            $sqls[] = 'ALTER TABLE ' . $q . $bp->table . $q . ' ADD ' . $fk->toSql($driver);
         }
         return $sqls;
+    }
+
+    /**
+     * FIX #3: safe identifier quoting — validates then quotes.
+     */
+    protected function quoteIdentifier(string $name): string
+    {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $name)) {
+            throw new \InvalidArgumentException("Invalid table name: [{$name}]");
+        }
+        $driver = $this->connection->getDriver();
+        if ($driver === 'mysql') {
+            return '`' . str_replace('`', '``', $name) . '`';
+        }
+        return '"' . str_replace('"', '""', $name) . '"';
     }
 }

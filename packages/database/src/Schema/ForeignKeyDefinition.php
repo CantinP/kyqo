@@ -5,8 +5,7 @@ namespace Kyqo\Database\Schema;
 /**
  * Fluent foreign key definition.
  *
- * Usage:
- *   $table->foreign('user_id')->references('id')->on('users')->onDelete('cascade');
+ * FIX #8: toSql() now accepts $driver to use correct quote char.
  */
 class ForeignKeyDefinition
 {
@@ -51,15 +50,20 @@ class ForeignKeyDefinition
     public function nullOnDelete(): static     { return $this->onDelete('SET NULL'); }
     public function cascadeOnUpdate(): static  { return $this->onUpdate('CASCADE'); }
 
-    public function toSql(): string
+    /**
+     * FIX #8: driver-aware quoting.
+     */
+    public function toSql(string $driver = 'mysql'): string
     {
+        $q    = $driver === 'mysql' ? '`' : '"';
         $name = 'fk_' . $this->table . '_' . $this->column;
+
         return sprintf(
-            'CONSTRAINT `%s` FOREIGN KEY (`%s`) REFERENCES `%s` (`%s`) ON DELETE %s ON UPDATE %s',
-            $name,
-            $this->column,
-            $this->refTable,
-            $this->refColumn,
+            'CONSTRAINT %s%s%s FOREIGN KEY (%s%s%s) REFERENCES %s%s%s (%s%s%s) ON DELETE %s ON UPDATE %s',
+            $q, $name,       $q,
+            $q, $this->column,  $q,
+            $q, $this->refTable, $q,
+            $q, $this->refColumn, $q,
             $this->onDelete,
             $this->onUpdate
         );

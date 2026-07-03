@@ -4,13 +4,12 @@ namespace Kyqo\Auth;
 
 use Kyqo\Core\Application;
 use Kyqo\Database\DatabaseManager;
+use Kyqo\Http\Request;
 
 /**
  * Kyqo Auth Manager
  *
- * Manages authentication guards and providers.
- * Supports session-based and token-based authentication.
- * Resolves DatabaseUserProvider and ArrayUserProvider automatically from config.
+ * FIX #2 (TokenGuard): passes the current Request to TokenGuard.
  */
 class AuthManager
 {
@@ -54,11 +53,20 @@ class AuthManager
 
         return match ($config['driver']) {
             'session' => new Guards\SessionGuard($name, $config, $provider),
-            'token'   => new Guards\TokenGuard($name, $config, $provider),
+            'token'   => new Guards\TokenGuard($name, $config, $provider, $this->resolveRequest()),
             default   => throw new \InvalidArgumentException(
                 "Auth guard driver [{$config['driver']}] is not supported."
             ),
         };
+    }
+
+    protected function resolveRequest(): ?Request
+    {
+        try {
+            return Application::getInstance()->make(Request::class);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     protected function resolveProvider(string $name): ?UserProviderInterface

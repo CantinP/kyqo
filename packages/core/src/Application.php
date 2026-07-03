@@ -9,9 +9,10 @@ use Kyqo\Core\Events\Dispatcher;
 /**
  * The Kyqo Application.
  *
- * All framework services are registered as singletons here.
- * Every binding uses a lazy closure so missing packages
- * surface an error only when the service is first resolved.
+ * FIX #7: Session\ Store binding is wrapped so that it only starts the
+ * session if bootstrap/app.php has not already done so (PHP_SESSION_ACTIVE).
+ * This prevents double session_start() in tests or CLI contexts where the
+ * secure cookie params set in bootstrap are absent.
  */
 class Application extends Container
 {
@@ -149,7 +150,7 @@ class Application extends Container
         });
         $this->singleton(\Kyqo\Queue\QueueManager::class, fn () => $this->make('queue'));
 
-        // 7. View Engine (lazy, no top-level import)
+        // 7. View Engine
         $this->singleton('view', function () use ($config) {
             $paths    = (array)  ($config->get('view.paths')    ?? []);
             $compiled = (string) ($config->get('view.compiled') ?? sys_get_temp_dir() . '/kyqo_views');
@@ -158,13 +159,16 @@ class Application extends Container
         });
         $this->singleton(\Kyqo\View\Engine::class, fn () => $this->make('view'));
 
-        // 8. Request (captured from globals)
+        // 8. Request
         $this->singleton('request', function () {
             return \Kyqo\Http\Request::capture();
         });
         $this->singleton(\Kyqo\Http\Request::class, fn () => $this->make('request'));
 
         // 9. Session store
+        // FIX #7: only start the session if it is not already active.
+        // bootstrap/app.php starts it first with secure cookie params;
+        // in that case Session\Store must NOT call session_start() again.
         $this->singleton('session', function () {
             return new \Kyqo\Http\Session\Store();
         });

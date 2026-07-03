@@ -7,17 +7,15 @@ use Kyqo\Database\Connection;
 /**
  * Runs and rolls back migrations.
  *
- * Tracks which migrations have run in the `migrations` table.
- * Uses file-name ordering for deterministic execution.
- *
- * CLI usage (via `php kyqo migrate`):
- *   $migrator = new Migrator($db->connection(), database_path('migrations'));
- *   $migrator->run();      // run pending
- *   $migrator->rollback(); // roll back last batch
- *   $migrator->status();   // list all with status
+ * FIX #12: resolve() now uses a class-cache keyed by filename to avoid
+ * returning PHP's plain `1` on subsequent requires of the same file.
+ * Each anonymous class is instantiated once and cached.
  */
 class Migrator
 {
+    /** @var array<string, Migration> */
+    protected array $resolved = [];
+
     public function __construct(
         protected Connection $connection,
         protected string     $path
@@ -54,7 +52,7 @@ class Migrator
             return [];
         }
 
-        $rows  = $this->connection->select(
+        $rows   = $this->connection->select(
             'SELECT migration FROM migrations WHERE batch = ? ORDER BY id DESC',
             [$batch]
         );
@@ -123,16 +121,34 @@ class Migrator
             return [];
         }
         sort($files);
-        return array_map(fn($f) => basename($f, '.php'), $files);
+        return array_map(fn ($f) => basename($f, '.php'), $files);
     }
 
+    /**
+     * FIX #12: cache resolved Migration instances so that the same file
+     * is never `require`d twice (PHP would return `1` on the second call).
+     */
     protected function resolve(string $name): Migration
     {
+        if (isset($this->resolved[$name])) {
+            return $this->resolved[$name];
+        }
+
         $file = $this->path . '/' . $name . '.php';
         if (!file_exists($file)) {
             throw new \RuntimeException("Migration file [{$file}] not found.");
         }
-        return require $file;
+
+        $migration = require $file;
+
+        if (!$migration instanceof Migration) {
+            throw new \RuntimeException(
+                "Migration file [{$file}] must return an instance of Migration."
+            );
+        }
+
+        $this->resolved[$name] = $migration;
+        return $migration;
     }
 
     protected function log(string $migration, int $batch): void

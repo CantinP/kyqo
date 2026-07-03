@@ -4,6 +4,11 @@ namespace Kyqo\Database\Schema;
 
 /**
  * Fluent column definition used by Blueprint.
+ *
+ * FIX #8: toSql() now accepts a $driver parameter so SQLite/PostgreSQL
+ * can receive double-quoted identifiers instead of backticks.
+ * AUTO_INCREMENT becomes AUTOINCREMENT for SQLite,
+ * SERIAL/BIGSERIAL for PostgreSQL.
  */
 class ColumnDefinition
 {
@@ -16,7 +21,6 @@ class ColumnDefinition
     public bool    $hasDefault  = false;
     public ?string $comment     = null;
     public bool    $unsigned    = false;
-    public ?int    $after       = null;
 
     public function __construct(string $name, string $type)
     {
@@ -62,43 +66,64 @@ class ColumnDefinition
     }
 
     /**
-     * Generate the SQL fragment for this column.
+     * FIX #8: driver-aware SQL generation.
      */
-    public function toSql(): string
+    public function toSql(string $driver = 'mysql'): string
     {
-        $sql = '`' . $this->name . '` ' . $this->type;
+        $q    = $driver === 'mysql' ? '`' : '"';
+        $type = $this->adaptType($this->type, $driver);
+        $col  = $q . $this->name . $q . ' ' . $type;
 
-        if (!$this->nullable) {
-            $sql .= ' NOT NULL';
-        } else {
-            $sql .= ' NULL';
-        }
+        $col .= $this->nullable ? ' NULL' : ' NOT NULL';
 
         if ($this->hasDefault) {
             $default = $this->default;
             if ($default === null) {
-                $sql .= ' DEFAULT NULL';
+                $col .= ' DEFAULT NULL';
             } elseif (is_bool($default)) {
-                $sql .= ' DEFAULT ' . ($default ? '1' : '0');
+                $col .= ' DEFAULT ' . ($default ? '1' : '0');
             } elseif (is_int($default) || is_float($default)) {
-                $sql .= ' DEFAULT ' . $default;
+                $col .= ' DEFAULT ' . $default;
             } else {
-                $sql .= " DEFAULT '" . str_replace("'", "''", (string) $default) . "'";
+                $col .= " DEFAULT '" . str_replace("'", "''", (string) $default) . "'";
             }
         }
 
         if ($this->isPrimary) {
-            $sql .= ' PRIMARY KEY';
+            $col .= ' PRIMARY KEY';
         }
 
         if ($this->isUnique) {
-            $sql .= ' UNIQUE';
+            $col .= ' UNIQUE';
         }
 
-        if ($this->comment !== null) {
-            $sql .= " COMMENT '" . str_replace("'", "''", $this->comment) . "'";
+        if ($this->comment !== null && $driver === 'mysql') {
+            $col .= " COMMENT '" . str_replace("'", "''", $this->comment) . "'";
         }
 
-        return $sql;
+        return $col;
+    }
+
+    /**
+     * Translate MySQL types to driver-native equivalents.
+     */
+    protected function adaptType(string $type, string $driver): string
+    {
+        if ($driver === 'mysql') {
+            return $type;
+        }
+
+        $map = [
+            'BIGINT UNSIGNED AUTO_INCREMENT' => $driver === 'pgsql' ? 'BIGSERIAL' : 'INTEGER',
+            'INT UNSIGNED AUTO_INCREMENT'    => $driver === 'pgsql' ? 'SERIAL'    : 'INTEGER',
+            'BIGINT UNSIGNED'                => $driver === 'pgsql' ? 'BIGINT'    : 'INTEGER',
+            'INT UNSIGNED'                   => 'INTEGER',
+            'TINYINT(1)'                     => $driver === 'pgsql' ? 'BOOLEAN'   : 'INTEGER',
+            'TINYINT'                        => 'SMALLINT',
+            'DATETIME'                       => $driver === 'pgsql' ? 'TIMESTAMP' : 'DATETIME',
+            'LONGTEXT'                       => $driver === 'pgsql' ? 'TEXT'      : 'TEXT',
+        ];
+
+        return $map[$type] ?? $type;
     }
 }

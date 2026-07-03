@@ -4,29 +4,35 @@ namespace Kyqo\Auth\Guards;
 
 use Kyqo\Auth\GuardInterface;
 use Kyqo\Auth\UserProviderInterface;
+use Kyqo\Http\Request;
 
 /**
  * Token-based authentication guard.
  *
- * MINOR-V4-4: Accepts an optional UserProviderInterface.
- * SEC-5 FIX (maintained): id() returns user's primary key, not null.
+ * FIX #2: Token extraction now delegates to the Request object
+ * instead of reading $_SERVER / $_GET / $_POST directly.
+ * An optional Request is accepted; falls back to Request::capture()
+ * only when the guard is used outside the HTTP cycle (e.g. CLI tests).
  */
 class TokenGuard implements GuardInterface
 {
-    protected string $name;
-    protected array  $config;
-    protected mixed  $user         = null;
-    protected bool   $userResolved = false;
+    protected string  $name;
+    protected array   $config;
+    protected mixed   $user         = null;
+    protected bool    $userResolved = false;
     protected ?UserProviderInterface $provider;
+    protected ?Request $request;
 
     public function __construct(
         string $name,
         array $config,
-        ?UserProviderInterface $provider = null
+        ?UserProviderInterface $provider = null,
+        ?Request $request = null
     ) {
         $this->name     = $name;
         $this->config   = $config;
         $this->provider = $provider;
+        $this->request  = $request;
     }
 
     public function user(): mixed
@@ -66,19 +72,25 @@ class TokenGuard implements GuardInterface
         $this->userResolved = false;
     }
 
+    /**
+     * FIX #2: Use Request object for all header/input access.
+     */
     protected function extractToken(): ?string
     {
-        $auth = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-        if (str_starts_with($auth, 'Bearer ')) {
-            $token = substr($auth, 7);
-            if (preg_match('/^[A-Za-z0-9\-_\.~\+\/]+=*$/', $token)) {
-                return $token;
-            }
+        $req = $this->request ?? Request::capture();
+
+        // 1. Authorization: Bearer <token>
+        $bearer = $req->bearerToken();
+        if ($bearer !== null) {
+            return $bearer;
         }
-        $inputToken = $_GET['api_token'] ?? $_POST['api_token'] ?? null;
+
+        // 2. ?api_token= query/body param
+        $inputToken = $req->get('api_token');
         if (is_string($inputToken) && $inputToken !== '') {
             return $inputToken;
         }
+
         return null;
     }
 }

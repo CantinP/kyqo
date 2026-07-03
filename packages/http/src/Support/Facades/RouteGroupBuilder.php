@@ -9,9 +9,12 @@ use Kyqo\Http\Router\Router;
 /**
  * Fluent builder for route groups.
  *
+ * FIX #1: wrapRoute() now registers the route INSIDE the group closure
+ * so prefix and middleware attributes are correctly applied.
+ *
  * Allows:
- *   Route::prefix('admin')->middleware('auth')->group(function () { ... });
- *   Route::middleware('auth')->prefix('api/v1')->group(function () { ... });
+ *   Route::prefix('admin')->middleware('auth')->group(fn () => ...);
+ *   Route::middleware('auth')->prefix('api/v1')->get('/users', ...);
  */
 class RouteGroupBuilder
 {
@@ -56,9 +59,31 @@ class RouteGroupBuilder
         return $this->wrapRoute(fn () => $this->router->post($uri, $action));
     }
 
+    public function put(string $uri, Closure|array|string $action): RouteInstance
+    {
+        return $this->wrapRoute(fn () => $this->router->put($uri, $action));
+    }
+
+    public function patch(string $uri, Closure|array|string $action): RouteInstance
+    {
+        return $this->wrapRoute(fn () => $this->router->patch($uri, $action));
+    }
+
+    public function delete(string $uri, Closure|array|string $action): RouteInstance
+    {
+        return $this->wrapRoute(fn () => $this->router->delete($uri, $action));
+    }
+
+    /**
+     * FIX #1: Route is registered INSIDE the group so Router::$groupStack
+     * is active when addRoute() runs, correctly applying prefix + middleware.
+     */
     protected function wrapRoute(Closure $register): RouteInstance
     {
-        $this->router->group($this->attributes, function () {});
-        return $register();
+        $route = null;
+        $this->router->group($this->attributes, function () use ($register, &$route) {
+            $route = $register();
+        });
+        return $route;
     }
 }

@@ -10,11 +10,14 @@ use Kyqo\Database\QueryBuilder;
 /**
  * Kyqo ORM Base Model — full ActiveRecord implementation.
  *
- * Supports:
- *  - Static query: Model::find(), Model::all(), Model::where(), Model::create()
- *  - Instance: save(), update(), delete(), fresh()
- *  - Attribute casting, dirty tracking, hidden fields, fillable guard
- *  - Automatic timestamps (created_at / updated_at)
+ * FIX #5: query() and where() now return a ModelQueryBuilder so that
+ * get() / first() return typed Model instances, not raw arrays.
+ * hydratePublic() is added as a public static entry point for ModelQueryBuilder.
+ *
+ * FIX #11: guessTable() uses a basic inflector that handles:
+ *   - words ending in 'y'  → ies  (Category → categories)
+ *   - words ending in s/x/z/ch/sh → es  (Box → boxes)
+ *   - everything else → +s
  */
 abstract class Model implements JsonSerializable
 {
@@ -42,24 +45,29 @@ abstract class Model implements JsonSerializable
 
     // ---- Static query API ---------------------------------------------------
 
-    public static function query(): QueryBuilder
+    /**
+     * FIX #5: returns a ModelQueryBuilder — get()/first() yield Model instances.
+     */
+    public static function query(): ModelQueryBuilder
     {
-        return static::db()->table((new static())->getTable());
+        $instance = new static();
+        $db       = static::db();
+        return new ModelQueryBuilder(
+            $db->connection(),
+            $instance->getTable(),
+            static::class
+        );
     }
 
     public static function all(): array
     {
-        return array_map(
-            fn (array $row) => static::hydrate($row),
-            static::query()->get()
-        );
+        return static::query()->get();
     }
 
     public static function find(mixed $id): ?static
     {
         $model = new static();
-        $row   = static::query()->find($id, $model->primaryKey);
-        return $row ? static::hydrate($row) : null;
+        return static::query()->find($id, $model->primaryKey);
     }
 
     public static function findOrFail(mixed $id): static
@@ -73,7 +81,10 @@ abstract class Model implements JsonSerializable
         return $model;
     }
 
-    public static function where(string $column, mixed $operatorOrValue, mixed $value = null): QueryBuilder
+    /**
+     * FIX #5: returns ModelQueryBuilder — results are hydrated.
+     */
+    public static function where(string $column, mixed $operatorOrValue, mixed $value = null): ModelQueryBuilder
     {
         $qb = static::query();
         return $value === null
@@ -94,9 +105,9 @@ abstract class Model implements JsonSerializable
         foreach ($conditions as $col => $val) {
             $qb->where($col, $val);
         }
-        $row = $qb->first();
-        if ($row !== null) {
-            return static::hydrate($row);
+        $existing = $qb->first();
+        if ($existing !== null) {
+            return $existing;
         }
         return static::create(array_merge($conditions, $extra));
     }
@@ -267,6 +278,9 @@ abstract class Model implements JsonSerializable
 
     // ---- Hydration ----------------------------------------------------------
 
+    /**
+     * Internal hydration — called from within this class and ModelQueryBuilder.
+     */
     protected static function hydrate(array $row): static
     {
         $model             = new static();
@@ -274,6 +288,15 @@ abstract class Model implements JsonSerializable
         $model->exists     = true;
         $model->syncOriginal();
         return $model;
+    }
+
+    /**
+     * FIX #5: public entry point for ModelQueryBuilder.
+     * Delegates to the protected hydrate() so subclasses can still override it.
+     */
+    public static function hydratePublic(array $row): static
+    {
+        return static::hydrate($row);
     }
 
     // ---- DB connection ------------------------------------------------------
@@ -285,9 +308,26 @@ abstract class Model implements JsonSerializable
 
     // ---- Table name guess ---------------------------------------------------
 
+    /**
+     * FIX #11: basic English inflector.
+     *   Category  → categories
+     *   Box       → boxes
+     *   User      → users
+     *   Person    → persons  (irregular forms require explicit $table)
+     */
     protected function guessTable(): string
     {
         $class = basename(str_replace('\\', '/', static::class));
-        return strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $class)) . 's';
+        // snake_case
+        $snake = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $class));
+
+        // Basic pluralisation rules
+        if (str_ends_with($snake, 'y') && !in_array(substr($snake, -2, 1), ['a','e','i','o','u'], true)) {
+            return substr($snake, 0, -1) . 'ies';   // category → categories
+        }
+        if (preg_match('/(s|x|z|ch|sh)$/', $snake)) {
+            return $snake . 'es';                    // box → boxes
+        }
+        return $snake . 's';                         // user → users
     }
 }

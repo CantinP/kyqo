@@ -5,10 +5,10 @@ namespace Kyqo\Http\Session;
 /**
  * Session store — thin wrapper around PHP native sessions.
  *
- * Provides a clean OO API for reading/writing session data
- * without exposing $_SESSION directly.
- *
- * All flash data (one-request values) is prefixed with _flash_.
+ * FIX #7: constructor does NOT call session_start() when a session is
+ * already active (PHP_SESSION_ACTIVE). bootstrap/app.php is responsible
+ * for starting the session with secure cookie parameters; this class
+ * must not override that.
  */
 class Store
 {
@@ -16,9 +16,11 @@ class Store
 
     public function __construct()
     {
+        // FIX #7: only start if not already running.
         if (session_status() === PHP_SESSION_NONE) {
             session_start();
         }
+        // PHP_SESSION_DISABLED → let it surface naturally (server mis-config).
     }
 
     // ---- Basic read/write ---------------------------------------------------
@@ -65,7 +67,7 @@ class Store
         $_SESSION = [];
     }
 
-    // ---- Flash data (persists only for the next request) --------------------
+    // ---- Flash data ---------------------------------------------------------
 
     public function flash(string $key, mixed $value): void
     {

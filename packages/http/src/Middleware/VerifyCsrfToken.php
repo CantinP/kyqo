@@ -8,9 +8,9 @@ use Kyqo\Http\Response;
 /**
  * CSRF Token Middleware
  *
- * SEC-V4-1 FIX: All @session_start() calls replaced with clean session_status() guards.
- * SEC-1 FIX (maintained): rotateToken() is NOT called inside handle().
- * Token rotation happens once, in Kernel::terminate(), after the response is sent.
+ * FIX #10: addCookieToResponse() now omits the Secure flag when the
+ * current request is not HTTPS, so local HTTP dev environments work
+ * without disabling CSRF protection.
  */
 class VerifyCsrfToken
 {
@@ -24,7 +24,7 @@ class VerifyCsrfToken
     public function handle(Request $request, \Closure $next): mixed
     {
         if ($this->isReading($request) || $this->inExceptArray($request)) {
-            return $this->addCookieToResponse($next($request));
+            return $this->addCookieToResponse($next($request), $request);
         }
 
         if (!$this->tokensMatch($request)) {
@@ -35,7 +35,7 @@ class VerifyCsrfToken
             );
         }
 
-        return $this->addCookieToResponse($next($request));
+        return $this->addCookieToResponse($next($request), $request);
     }
 
     public static function generateToken(): string
@@ -59,9 +59,6 @@ class VerifyCsrfToken
         return $_SESSION['_kyqo_csrf_token'];
     }
 
-    /**
-     * SEC-V4-1 FIX: Clean session guard — no @ suppression.
-     */
     private static function ensureSession(): void
     {
         if (session_status() === PHP_SESSION_NONE) {
@@ -100,12 +97,16 @@ class VerifyCsrfToken
         return false;
     }
 
-    protected function addCookieToResponse(mixed $response): mixed
+    /**
+     * FIX #10: Secure flag only set when the request itself is HTTPS.
+     */
+    protected function addCookieToResponse(mixed $response, Request $request): mixed
     {
         if ($response instanceof Response) {
-            $token = self::getToken();
+            $token  = self::getToken();
+            $secure = $request->isSecure() ? '; Secure' : '';
             $response->addCookie(
-                'XSRF-TOKEN=' . urlencode($token) . '; Path=/; SameSite=Strict; HttpOnly; Secure'
+                'XSRF-TOKEN=' . urlencode($token) . '; Path=/; SameSite=Strict; HttpOnly' . $secure
             );
         }
         return $response;
