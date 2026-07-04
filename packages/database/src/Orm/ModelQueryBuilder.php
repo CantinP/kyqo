@@ -9,6 +9,9 @@ use Kyqo\Database\QueryBuilder;
  *
  * Wraps the base QueryBuilder and hydrates results as Model instances.
  * Supports eager loading via with().
+ *
+ * FIX BTM: calls $qb->setModel() so that QueryBuilder::getModel() works
+ * when BelongsToMany::buildJoinQuery() is called.
  */
 class ModelQueryBuilder
 {
@@ -17,7 +20,11 @@ class ModelQueryBuilder
     public function __construct(
         protected QueryBuilder $query,
         protected string       $modelClass
-    ) {}
+    ) {
+        // Bind the model class onto the underlying QB so relation join-queries
+        // can call getModel()->getTable() without a separate reference.
+        $this->query->setModel($modelClass);
+    }
 
     public function with(array|string $relations): static
     {

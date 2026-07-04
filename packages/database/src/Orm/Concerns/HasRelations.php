@@ -20,7 +20,8 @@ trait HasRelations
     {
         $instance   = new $related();
         $foreignKey = $foreignKey ?: $this->guessForeignKey();
-        $query      = $instance->newQuery();
+        $query      = $instance->newQuery()->query;  // unwrap to raw QueryBuilder
+        $query->setModel($related);
         return new HasOne($query, $this, $foreignKey, $localKey);
     }
 
@@ -28,7 +29,8 @@ trait HasRelations
     {
         $instance   = new $related();
         $foreignKey = $foreignKey ?: $this->guessForeignKey();
-        $query      = $instance->newQuery();
+        $query      = $instance->newQuery()->query;
+        $query->setModel($related);
         return new HasMany($query, $this, $foreignKey, $localKey);
     }
 
@@ -36,13 +38,14 @@ trait HasRelations
     {
         $instance   = new $related();
         $foreignKey = $foreignKey ?: (strtolower(class_basename($related)) . '_id');
-        $query      = $instance->newQuery();
+        $query      = $instance->newQuery()->query;
+        $query->setModel($related);
         return new BelongsTo($query, $this, $foreignKey, $ownerKey);
     }
 
     public function belongsToMany(
         string $related,
-        string $table       = '',
+        string $pivotTable  = '',
         string $foreignKey  = '',
         string $relatedKey  = '',
         string $parentKey   = 'id',
@@ -51,47 +54,49 @@ trait HasRelations
         $instance   = new $related();
         $foreignKey = $foreignKey ?: $this->guessForeignKey();
         $relatedKey = $relatedKey ?: (strtolower(class_basename($related)) . '_id');
-        $table      = $table      ?: $this->pivotTableName($related);
-        $query      = $instance->newQuery();
-        return new BelongsToMany($query, $this, $table, $foreignKey, $relatedKey, $parentKey, $relatedPKey);
+
+        if ($pivotTable === '') {
+            // Convention: alphabetical order of the two table names joined by _
+            $tables = [
+                strtolower(class_basename(static::class)),
+                strtolower(class_basename($related)),
+            ];
+            sort($tables);
+            $pivotTable = implode('_', $tables);
+        }
+
+        $query = $instance->newQuery()->query;
+        $query->setModel($related);
+
+        return new BelongsToMany(
+            $query, $this, $pivotTable,
+            $foreignKey, $relatedKey,
+            $parentKey, $relatedPKey
+        );
     }
 
-    public function setRelation(string $relation, mixed $value): static
+    // ── Relation registry ────────────────────────────────────────────────────
+
+    public function setRelation(string $name, mixed $value): static
     {
-        $this->relations[$relation] = $value;
+        $this->relations[$name] = $value;
         return $this;
     }
 
-    public function getRelation(string $relation): mixed
+    public function relationLoaded(string $name): bool
     {
-        return $this->relations[$relation] ?? null;
+        return array_key_exists($name, $this->relations);
     }
 
-    public function relationLoaded(string $relation): bool
+    public function getRelation(string $name): mixed
     {
-        return array_key_exists($relation, $this->relations);
+        return $this->relations[$name] ?? null;
     }
 
-    public function getRelations(): array { return $this->relations; }
-
-    /** with(['posts', 'roles']) — eager-load relations on a collection. */
-    public static function with(array $relations): \Kyqo\Database\Orm\ModelQueryBuilder
-    {
-        return (new static())->newQuery()->with($relations);
-    }
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
     protected function guessForeignKey(): string
     {
         return strtolower(class_basename(static::class)) . '_id';
-    }
-
-    protected function pivotTableName(string $related): string
-    {
-        $models = [
-            strtolower(class_basename(static::class)),
-            strtolower(class_basename($related)),
-        ];
-        sort($models);
-        return implode('_', $models);
     }
 }

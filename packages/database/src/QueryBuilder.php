@@ -10,6 +10,8 @@ namespace Kyqo\Database;
  * FIX B6: quoteIdentifier() now accepts table.column patterns (e.g. "users.id")
  * needed for JOINs and eager-loading in BelongsToMany.
  * Plain identifiers and qualified table.column are both validated strictly.
+ *
+ * FIX BTM: added join() and getModel() so BelongsToMany::buildJoinQuery() works.
  */
 class QueryBuilder
 {
@@ -21,6 +23,10 @@ class QueryBuilder
     protected ?int       $limit     = null;
     protected ?int       $offset    = null;
     protected array      $orders    = [];
+    protected array      $joins     = [];
+
+    /** @var string|null  FQCN of the model that owns this query (set by ModelQueryBuilder) */
+    protected ?string $modelClass = null;
 
     public function __construct(Connection $connection, string $table)
     {
@@ -86,6 +92,40 @@ class QueryBuilder
         return $this;
     }
 
+    // ── JOIN ─────────────────────────────────────────────────────────────────
+
+    /**
+     * FIX BTM: Add an INNER JOIN clause.
+     *
+     * @param string $table      Join table name
+     * @param string $first      Left-hand column  (e.g. "users.id")
+     * @param string $operator   Join operator     (e.g. "=")
+     * @param string $second     Right-hand column (e.g. "role_user.user_id")
+     */
+    public function join(string $table, string $first, string $operator, string $second): static
+    {
+        $op            = $this->sanitizeOperator($operator);
+        $this->joins[] = 'INNER JOIN '
+            . $this->quoteIdentifier($table)
+            . ' ON '
+            . $this->quoteIdentifier($first)
+            . " {$op} "
+            . $this->quoteIdentifier($second);
+        return $this;
+    }
+
+    public function leftJoin(string $table, string $first, string $operator, string $second): static
+    {
+        $op            = $this->sanitizeOperator($operator);
+        $this->joins[] = 'LEFT JOIN '
+            . $this->quoteIdentifier($table)
+            . ' ON '
+            . $this->quoteIdentifier($first)
+            . " {$op} "
+            . $this->quoteIdentifier($second);
+        return $this;
+    }
+
     // ── Ordering / limiting ─────────────────────────────────────────────────
 
     public function orderBy(string $column, string $direction = 'asc'): static
@@ -123,6 +163,7 @@ class QueryBuilder
     public function count(): int
     {
         $sql  = 'SELECT COUNT(*) as aggregate FROM ' . $this->quoteIdentifier($this->table);
+        $sql .= $this->buildJoinClause();
         $sql .= $this->buildWhereClause();
         $row  = $this->connection->selectOne($sql, $this->bindings);
         return (int) ($row['aggregate'] ?? 0);
@@ -185,6 +226,33 @@ class QueryBuilder
         return $this->connection->delete($sql, $this->bindings);
     }
 
+    // ── Model binding ────────────────────────────────────────────────────────
+
+    /**
+     * FIX BTM: Store the model class so BelongsToMany can call getModel()->getTable().
+     */
+    public function setModel(string $modelClass): static
+    {
+        $this->modelClass = $modelClass;
+        return $this;
+    }
+
+    /**
+     * FIX BTM: Return a fresh model instance so relation classes can call getTable() etc.
+     *
+     * @throws \RuntimeException if no model class was bound to this builder.
+     */
+    public function getModel(): \Kyqo\Database\Orm\Model
+    {
+        if ($this->modelClass === null) {
+            throw new \RuntimeException(
+                'QueryBuilder::getModel() called but no model class is bound. '
+                . 'Use setModel(MyModel::class) or go through ModelQueryBuilder.'
+            );
+        }
+        return new $this->modelClass();
+    }
+
     // ── SQL generation ───────────────────────────────────────────────────────
 
     public function toSql(): string
@@ -194,6 +262,7 @@ class QueryBuilder
         }, $this->columns));
 
         $sql  = "SELECT {$cols} FROM " . $this->quoteIdentifier($this->table);
+        $sql .= $this->buildJoinClause();
         $sql .= $this->buildWhereClause();
 
         if (!empty($this->orders)) {
@@ -209,7 +278,15 @@ class QueryBuilder
         return $sql;
     }
 
+    public function getConnection(): Connection { return $this->connection; }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    protected function buildJoinClause(): string
+    {
+        if (empty($this->joins)) return '';
+        return ' ' . implode(' ', $this->joins);
+    }
 
     protected function buildWhereClause(): string
     {

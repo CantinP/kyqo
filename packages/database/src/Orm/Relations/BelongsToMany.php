@@ -13,19 +13,29 @@ use Kyqo\Database\QueryBuilder;
  *   {
  *       return $this->belongsToMany(Role::class, 'role_user', 'user_id', 'role_id');
  *   }
+ *
+ * FIX BTM: buildJoinQuery() no longer calls getModel() on QueryBuilder (which
+ * didn't exist before). Instead, the related model instance is resolved from
+ * the query's bound model class via setModel / getModel, or directly from
+ * the $relatedInstance stored at construction time.
  */
 class BelongsToMany extends Relation
 {
+    /** The related model instance (used to call getTable()). */
+    protected Model $relatedInstance;
+
     public function __construct(
-        QueryBuilder $query,
-        Model        $parent,
-        protected string $table,        // pivot table
-        string       $foreignKey,       // parent FK in pivot  (e.g. user_id)
-        string       $localKey,         // related FK in pivot (e.g. role_id)
-        protected string $parentKey = 'id',
+        QueryBuilder  $query,
+        Model         $parent,
+        protected string $pivotTable,   // pivot table name
+        string        $foreignKey,      // parent FK in pivot  (e.g. user_id)
+        string        $localKey,        // related FK in pivot (e.g. role_id)
+        protected string $parentKey  = 'id',
         protected string $relatedKey = 'id'
     ) {
         parent::__construct($query, $parent, $foreignKey, $localKey);
+        // Resolve the related model instance from the QB's bound model class
+        $this->relatedInstance = $query->getModel();
     }
 
     public function getResults(): array
@@ -36,7 +46,7 @@ class BelongsToMany extends Relation
     public function addEagerConstraints(array $models): void
     {
         $this->buildJoinQuery()->whereIn(
-            $this->table . '.' . $this->foreignKey,
+            $this->pivotTable . '.' . $this->foreignKey,
             $this->getKeys($models, $this->parentKey)
         );
     }
@@ -45,8 +55,10 @@ class BelongsToMany extends Relation
     {
         $dictionary = [];
         foreach ($results as $result) {
-            $pivotKey = $result->{'pivot_' . $this->foreignKey} ?? $result->{$this->foreignKey};
-            $dictionary[$pivotKey][] = $result;
+            $pivotKey = $result->{'pivot_' . $this->foreignKey} ?? $result->{$this->foreignKey} ?? null;
+            if ($pivotKey !== null) {
+                $dictionary[$pivotKey][] = $result;
+            }
         }
         foreach ($models as $model) {
             $key = $model->{$this->parentKey};
@@ -60,14 +72,14 @@ class BelongsToMany extends Relation
     {
         $connection = $this->query->getConnection();
         foreach ((array) $ids as $id) {
-            $row = array_merge([
+            $row    = array_merge([
                 $this->foreignKey => $this->getParentKey(),
                 $this->localKey   => $id,
             ], $attributes);
             $cols   = implode(', ', array_keys($row));
             $places = implode(', ', array_fill(0, count($row), '?'));
             $connection->statement(
-                "INSERT IGNORE INTO {$this->table} ({$cols}) VALUES ({$places})",
+                "INSERT IGNORE INTO {$this->pivotTable} ({$cols}) VALUES ({$places})",
                 array_values($row)
             );
         }
@@ -79,13 +91,13 @@ class BelongsToMany extends Relation
         $connection = $this->query->getConnection();
         if ($ids === null) {
             $connection->statement(
-                "DELETE FROM {$this->table} WHERE {$this->foreignKey} = ?",
+                "DELETE FROM {$this->pivotTable} WHERE {$this->foreignKey} = ?",
                 [$this->getParentKey()]
             );
         } else {
             $placeholders = implode(', ', array_fill(0, count((array) $ids), '?'));
             $connection->statement(
-                "DELETE FROM {$this->table} WHERE {$this->foreignKey} = ? AND {$this->localKey} IN ({$placeholders})",
+                "DELETE FROM {$this->pivotTable} WHERE {$this->foreignKey} = ? AND {$this->localKey} IN ({$placeholders})",
                 array_merge([$this->getParentKey()], (array) $ids)
             );
         }
@@ -98,17 +110,23 @@ class BelongsToMany extends Relation
         $this->attach($ids);
     }
 
+    /**
+     * FIX BTM: use $this->relatedInstance->getTable() instead of
+     * $this->query->getModel()->getTable() (getModel() didn't exist on QB).
+     */
     protected function buildJoinQuery(): QueryBuilder
     {
+        $relatedTable = $this->relatedInstance->getTable();
+
         return $this->query
             ->join(
-                $this->table,
-                $this->query->getModel()->getTable() . '.' . $this->relatedKey,
+                $this->pivotTable,
+                $relatedTable . '.' . $this->relatedKey,
                 '=',
-                $this->table . '.' . $this->localKey
+                $this->pivotTable . '.' . $this->localKey
             )
             ->where(
-                $this->table . '.' . $this->foreignKey,
+                $this->pivotTable . '.' . $this->foreignKey,
                 '=',
                 $this->getParentKey()
             );
