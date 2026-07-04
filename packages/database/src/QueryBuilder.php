@@ -12,6 +12,10 @@ namespace Kyqo\Database;
  * Plain identifiers and qualified table.column are both validated strictly.
  *
  * FIX BTM: added join() and getModel() so BelongsToMany::buildJoinQuery() works.
+ *
+ * FEAT PAGINATE: added paginate() returning the standard
+ * ['data','total','per_page','current_page','last_page'] array consumed by
+ * Kyqo\View\Pagination\Paginator.
  */
 class QueryBuilder
 {
@@ -94,14 +98,6 @@ class QueryBuilder
 
     // ── JOIN ─────────────────────────────────────────────────────────────────
 
-    /**
-     * FIX BTM: Add an INNER JOIN clause.
-     *
-     * @param string $table      Join table name
-     * @param string $first      Left-hand column  (e.g. "users.id")
-     * @param string $operator   Join operator     (e.g. "=")
-     * @param string $second     Right-hand column (e.g. "role_user.user_id")
-     */
     public function join(string $table, string $first, string $operator, string $second): static
     {
         $op            = $this->sanitizeOperator($operator);
@@ -183,6 +179,44 @@ class QueryBuilder
         return $row[$column] ?? null;
     }
 
+    /**
+     * Paginate results.
+     *
+     * Returns the standard pagination envelope consumed by
+     * Kyqo\View\Pagination\Paginator:
+     *
+     *   ['data', 'total', 'per_page', 'current_page', 'last_page']
+     *
+     * The COUNT query is run on a clean clone of the builder so that
+     * any previously set LIMIT/OFFSET do not affect the total.
+     *
+     * @param  int  $perPage  Rows per page (default 15).
+     * @param  int  $page     1-based current page number.
+     * @return array{data: array, total: int, per_page: int, current_page: int, last_page: int}
+     */
+    public function paginate(int $perPage = 15, int $page = 1): array
+    {
+        $perPage = max(1, $perPage);
+        $page    = max(1, $page);
+
+        // Run COUNT on a clone to avoid poisoning the main query.
+        $counter          = clone $this;
+        $counter->limit   = null;
+        $counter->offset  = null;
+        $counter->columns = ['*'];
+        $total            = $counter->count();
+
+        $rows = $this->offset(($page - 1) * $perPage)->limit($perPage)->get();
+
+        return [
+            'data'         => $rows,
+            'total'        => $total,
+            'per_page'     => $perPage,
+            'current_page' => $page,
+            'last_page'    => $total > 0 ? (int) ceil($total / $perPage) : 1,
+        ];
+    }
+
     // ── Writes ──────────────────────────────────────────────────────────────
 
     public function insert(array $data): bool
@@ -228,20 +262,12 @@ class QueryBuilder
 
     // ── Model binding ────────────────────────────────────────────────────────
 
-    /**
-     * FIX BTM: Store the model class so BelongsToMany can call getModel()->getTable().
-     */
     public function setModel(string $modelClass): static
     {
         $this->modelClass = $modelClass;
         return $this;
     }
 
-    /**
-     * FIX BTM: Return a fresh model instance so relation classes can call getTable() etc.
-     *
-     * @throws \RuntimeException if no model class was bound to this builder.
-     */
     public function getModel(): \Kyqo\Database\Orm\Model
     {
         if ($this->modelClass === null) {
@@ -294,20 +320,12 @@ class QueryBuilder
         return ' WHERE ' . implode(' AND ', $this->wheres);
     }
 
-    /**
-     * FIX B6 – Accept both plain identifiers AND qualified table.column.
-     *
-     * Valid:  id, user_id, created_at, users.id, posts.user_id
-     * Invalid: anything with spaces, semicolons, quotes, etc.
-     */
     protected function quoteIdentifier(string $name): string
     {
-        // Qualified: table.column
         if (str_contains($name, '.')) {
             $parts = explode('.', $name, 2);
             return $this->quotePart($parts[0]) . '.' . $this->quotePart($parts[1]);
         }
-
         return $this->quotePart($name);
     }
 

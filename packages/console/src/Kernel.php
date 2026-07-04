@@ -4,10 +4,14 @@ namespace Kyqo\Console;
 
 use Kyqo\Core\Application;
 use Kyqo\Console\Commands\CacheClearCommand;
+use Kyqo\Console\Commands\DbSeedCommand;
 use Kyqo\Console\Commands\KeyGenerateCommand;
 use Kyqo\Console\Commands\MakeControllerCommand;
 use Kyqo\Console\Commands\MakeMigrationCommand;
 use Kyqo\Console\Commands\MakeModelCommand;
+use Kyqo\Console\Commands\MakeJobCommand;
+use Kyqo\Console\Commands\MakeMiddlewareCommand;
+use Kyqo\Console\Commands\MakeSeederCommand;
 use Kyqo\Console\Commands\MigrateCommand;
 use Kyqo\Console\Commands\MigrateRollbackCommand;
 use Kyqo\Console\Commands\QueueFailedCommand;
@@ -17,12 +21,6 @@ use Symfony\Component\Console\Application as ConsoleApp;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
-/**
- * Console Kernel
- *
- * FIX C4 – registered all missing commands documented in the README:
- *   make:controller, cache:clear, serve, queue:failed
- */
 class Kernel
 {
     protected ConsoleApp $console;
@@ -32,9 +30,14 @@ class Kernel
         MigrateCommand::class,
         MigrateRollbackCommand::class,
         MakeMigrationCommand::class,
+        // Database
+        DbSeedCommand::class,
         // Generators
         MakeModelCommand::class,
         MakeControllerCommand::class,
+        MakeJobCommand::class,
+        MakeMiddlewareCommand::class,
+        MakeSeederCommand::class,
         // Runtime
         KeyGenerateCommand::class,
         CacheClearCommand::class,
