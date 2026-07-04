@@ -16,7 +16,7 @@ if (!function_exists('env')) {
     {
         $value = $_ENV[$key] ?? getenv($key);
         if ($value === false || $value === null) return $default;
-        return match (strtolower($value)) {
+        return match (strtolower((string) $value)) {
             'true',  '(true)'  => true,
             'false', '(false)' => false,
             'null',  '(null)'  => null,
@@ -36,9 +36,10 @@ if (!function_exists('config')) {
 }
 
 if (!function_exists('view')) {
-    function view(string $template, array $data = []): string
+    function view(string $template, array $data = []): \Kyqo\Http\Response
     {
-        return app('view')->make($template, $data);
+        $html = app('view')->make($template, $data);
+        return new \Kyqo\Http\Response($html, 200, ['Content-Type' => 'text/html; charset=UTF-8']);
     }
 }
 
@@ -178,6 +179,17 @@ if (!function_exists('route')) {
     }
 }
 
+/**
+ * FIX A5 – route_url() was called in Auth controllers but didn't exist.
+ * Alias to route().
+ */
+if (!function_exists('route_url')) {
+    function route_url(string $name, array $parameters = []): string
+    {
+        return route($name, $parameters);
+    }
+}
+
 if (!function_exists('old')) {
     function old(string $key, mixed $default = null): mixed
     {
@@ -213,7 +225,6 @@ if (!function_exists('method_field')) {
 if (!function_exists('trans')) {
     function trans(string $key, array $replace = [], ?string $locale = null): string
     {
-        // Placeholder — returns the key until an i18n package is added.
         return $key;
     }
 }
@@ -235,9 +246,7 @@ if (!function_exists('value')) {
 if (!function_exists('tap')) {
     function tap(mixed $value, ?callable $callback = null): mixed
     {
-        if ($callback === null) {
-            return $value;
-        }
+        if ($callback === null) return $value;
         $callback($value);
         return $value;
     }
@@ -261,10 +270,7 @@ if (!function_exists('blank')) {
 }
 
 if (!function_exists('filled')) {
-    function filled(mixed $value): bool
-    {
-        return !blank($value);
-    }
+    function filled(mixed $value): bool { return !blank($value); }
 }
 
 if (!function_exists('throw_if')) {
@@ -291,5 +297,12 @@ if (!function_exists('rescue')) {
         } catch (\Throwable $e) {
             return value($rescue, $e);
         }
+    }
+}
+
+if (!function_exists('event')) {
+    function event(object $event): mixed
+    {
+        return app('events')->dispatch($event);
     }
 }

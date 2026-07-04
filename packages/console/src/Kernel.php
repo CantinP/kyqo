@@ -3,12 +3,16 @@
 namespace Kyqo\Console;
 
 use Kyqo\Core\Application;
-use Kyqo\Console\Commands\MigrateCommand;
+use Kyqo\Console\Commands\CacheClearCommand;
 use Kyqo\Console\Commands\KeyGenerateCommand;
-use Kyqo\Console\Commands\QueueWorkCommand;
-use Kyqo\Console\Commands\MigrateRollbackCommand;
-use Kyqo\Console\Commands\MakeModelCommand;
+use Kyqo\Console\Commands\MakeControllerCommand;
 use Kyqo\Console\Commands\MakeMigrationCommand;
+use Kyqo\Console\Commands\MakeModelCommand;
+use Kyqo\Console\Commands\MigrateCommand;
+use Kyqo\Console\Commands\MigrateRollbackCommand;
+use Kyqo\Console\Commands\QueueFailedCommand;
+use Kyqo\Console\Commands\QueueWorkCommand;
+use Kyqo\Console\Commands\ServeCommand;
 use Symfony\Component\Console\Application as ConsoleApp;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -16,28 +20,33 @@ use Symfony\Component\Console\Output\OutputInterface;
 /**
  * Console Kernel
  *
- * Boots Symfony Console, registers all built-in Kyqo commands,
- * and hands control to the CLI input/output.
+ * FIX C4 – registered all missing commands documented in the README:
+ *   make:controller, cache:clear, serve, queue:failed
  */
 class Kernel
 {
     protected ConsoleApp $console;
 
-    /**
-     * Built-in framework commands.
-     */
     protected array $commands = [
+        // Migrations
         MigrateCommand::class,
         MigrateRollbackCommand::class,
-        KeyGenerateCommand::class,
-        QueueWorkCommand::class,
-        MakeModelCommand::class,
         MakeMigrationCommand::class,
+        // Generators
+        MakeModelCommand::class,
+        MakeControllerCommand::class,
+        // Runtime
+        KeyGenerateCommand::class,
+        CacheClearCommand::class,
+        ServeCommand::class,
+        // Queue
+        QueueWorkCommand::class,
+        QueueFailedCommand::class,
     ];
 
     public function __construct(protected Application $app)
     {
-        $this->console = new ConsoleApp('Kyqo', '1.0.0');
+        $this->console = new ConsoleApp('Kyqo', Application::VERSION);
     }
 
     public function handle(InputInterface $input, OutputInterface $output): int

@@ -6,13 +6,10 @@ namespace Kyqo\Database;
  * Fluent SQL query builder.
  *
  * All values go through PDO prepared statements.
- * Identifiers (table/column names) are quoted but never interpolated from raw user input.
  *
- * FIX N6: quoteIdentifier() no longer allows dots in identifiers.
- * Previously `/^[a-zA-Z_][a-zA-Z0-9_.]*$/` permitted `table.column`,
- * which is a valid use case but the dot could allow edge-case bypasses.
- * Dots are now rejected; callers should pass plain column names only.
- * The SELECT column list handles `*` explicitly.
+ * FIX B6: quoteIdentifier() now accepts table.column patterns (e.g. "users.id")
+ * needed for JOINs and eager-loading in BelongsToMany.
+ * Plain identifiers and qualified table.column are both validated strictly.
  */
 class QueryBuilder
 {
@@ -31,7 +28,7 @@ class QueryBuilder
         $this->table      = $table;
     }
 
-    // ---- Column selection ---------------------------------------------------
+    // ── Column selection ────────────────────────────────────────────────────
 
     public function select(array|string $columns): static
     {
@@ -39,7 +36,7 @@ class QueryBuilder
         return $this;
     }
 
-    // ---- Conditions ---------------------------------------------------------
+    // ── Conditions ──────────────────────────────────────────────────────────
 
     public function where(string $column, mixed $operatorOrValue, mixed $value = null): static
     {
@@ -82,16 +79,14 @@ class QueryBuilder
 
     public function whereNotIn(string $column, array $values): static
     {
-        if (empty($values)) {
-            return $this;
-        }
+        if (empty($values)) return $this;
         $placeholders   = implode(', ', array_fill(0, count($values), '?'));
         $this->wheres[] = $this->quoteIdentifier($column) . " NOT IN ({$placeholders})";
         array_push($this->bindings, ...$values);
         return $this;
     }
 
-    // ---- Ordering / limiting ------------------------------------------------
+    // ── Ordering / limiting ─────────────────────────────────────────────────
 
     public function orderBy(string $column, string $direction = 'asc'): static
     {
@@ -100,32 +95,15 @@ class QueryBuilder
         return $this;
     }
 
-    public function latest(string $column = 'created_at'): static
-    {
-        return $this->orderBy($column, 'desc');
-    }
+    public function latest(string $column = 'created_at'): static { return $this->orderBy($column, 'desc'); }
+    public function oldest(string $column = 'created_at'): static { return $this->orderBy($column, 'asc'); }
 
-    public function oldest(string $column = 'created_at'): static
-    {
-        return $this->orderBy($column, 'asc');
-    }
+    public function limit(int $value): static  { $this->limit = max(0, $value); return $this; }
+    public function offset(int $value): static { $this->offset = max(0, $value); return $this; }
+    public function skip(int $value): static   { return $this->offset($value); }
+    public function take(int $value): static   { return $this->limit($value); }
 
-    public function limit(int $value): static
-    {
-        $this->limit = max(0, $value);
-        return $this;
-    }
-
-    public function offset(int $value): static
-    {
-        $this->offset = max(0, $value);
-        return $this;
-    }
-
-    public function skip(int $value): static  { return $this->offset($value); }
-    public function take(int $value): static  { return $this->limit($value); }
-
-    // ---- Results ------------------------------------------------------------
+    // ── Results ─────────────────────────────────────────────────────────────
 
     public function get(): array
     {
@@ -150,10 +128,7 @@ class QueryBuilder
         return (int) ($row['aggregate'] ?? 0);
     }
 
-    public function exists(): bool
-    {
-        return $this->count() > 0;
-    }
+    public function exists(): bool { return $this->count() > 0; }
 
     public function pluck(string $column): array
     {
@@ -167,7 +142,7 @@ class QueryBuilder
         return $row[$column] ?? null;
     }
 
-    // ---- Writes -------------------------------------------------------------
+    // ── Writes ──────────────────────────────────────────────────────────────
 
     public function insert(array $data): bool
     {
@@ -210,7 +185,7 @@ class QueryBuilder
         return $this->connection->delete($sql, $this->bindings);
     }
 
-    // ---- SQL generation -----------------------------------------------------
+    // ── SQL generation ───────────────────────────────────────────────────────
 
     public function toSql(): string
     {
@@ -234,31 +209,41 @@ class QueryBuilder
         return $sql;
     }
 
-    // ---- Helpers ------------------------------------------------------------
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
     protected function buildWhereClause(): string
     {
-        if (empty($this->wheres)) {
-            return '';
-        }
+        if (empty($this->wheres)) return '';
         return ' WHERE ' . implode(' AND ', $this->wheres);
     }
 
     /**
-     * FIX N6: reject identifiers containing dots.
-     * Only plain alphanumeric + underscore names are accepted.
-     * table.column patterns must be handled by the caller via two separate calls.
+     * FIX B6 – Accept both plain identifiers AND qualified table.column.
+     *
+     * Valid:  id, user_id, created_at, users.id, posts.user_id
+     * Invalid: anything with spaces, semicolons, quotes, etc.
      */
     protected function quoteIdentifier(string $name): string
     {
-        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $name)) {
-            throw new \InvalidArgumentException("Invalid SQL identifier: [{$name}]");
+        // Qualified: table.column
+        if (str_contains($name, '.')) {
+            $parts = explode('.', $name, 2);
+            return $this->quotePart($parts[0]) . '.' . $this->quotePart($parts[1]);
+        }
+
+        return $this->quotePart($name);
+    }
+
+    protected function quotePart(string $part): string
+    {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $part)) {
+            throw new \InvalidArgumentException("Invalid SQL identifier part: [{$part}]");
         }
         $driver = $this->connection->getDriver();
         if ($driver === 'pgsql') {
-            return '"' . str_replace('"', '""', $name) . '"';
+            return '"' . str_replace('"', '""', $part) . '"';
         }
-        return '`' . str_replace('`', '``', $name) . '`';
+        return '`' . str_replace('`', '``', $part) . '`';
     }
 
     protected function sanitizeOperator(mixed $op): string

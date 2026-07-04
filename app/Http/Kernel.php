@@ -15,20 +15,26 @@ use Kyqo\Auth\Middleware\Authenticate;
 /**
  * Application HTTP Kernel.
  *
- * Global middleware runs on every request.
- * Route middleware is applied per-route via ->middleware('alias').
+ * FIX C2 – TrimStrings and ConvertEmptyStringsToNull were listed in BOTH
+ *   $middleware (global) and $middlewareGroups['web'], causing double-execution
+ *   on every web route.  Removed from $middleware; they now only run inside
+ *   the 'web' group (applied via RouteServiceProvider).
  */
 class Kernel extends BaseKernel
 {
+    /**
+     * Global middleware — runs on EVERY request, web or API.
+     * Keep this list small and stateless.
+     */
     protected array $middleware = [
         ValidateBodySize::class,
         SecurityHeaders::class,
-        TrimStrings::class,
-        ConvertEmptyStringsToNull::class,
-        VerifyCsrfToken::class,
         ThrottleRequests::class,
     ];
 
+    /**
+     * Route middleware — applied per-route via ->middleware('alias').
+     */
     protected array $routeMiddleware = [
         'auth'     => Authenticate::class,
         'guest'    => RedirectIfAuthenticated::class,
@@ -37,6 +43,10 @@ class Kernel extends BaseKernel
         'headers'  => SecurityHeaders::class,
     ];
 
+    /**
+     * Middleware groups — applied automatically by RouteServiceProvider
+     * for 'web' and 'api' route groups.
+     */
     protected array $middlewareGroups = [
         'web' => [
             TrimStrings::class,

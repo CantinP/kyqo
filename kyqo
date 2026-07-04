@@ -6,18 +6,9 @@ declare(strict_types=1);
 /**
  * Kyqo CLI entry point.
  *
- * Usage:
- *   php kyqo <command> [arguments] [--options]
- *
- * Examples:
- *   php kyqo migrate
- *   php kyqo migrate:rollback --step=2
- *   php kyqo queue:work --queue=default
- *   php kyqo make:controller UserController
- *   php kyqo make:model Post --migration
- *   php kyqo cache:clear
- *   php kyqo key:generate
- *   php kyqo serve --port=8000
+ * FIX B3 – replaced non-existent Kyqo\Console\Input\ArgvInput and
+ *           Kyqo\Console\Output\ConsoleOutput with the real Symfony classes
+ *           that Console\Kernel already type-hints against.
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -25,16 +16,14 @@ if (PHP_SAPI !== 'cli') {
     exit(1);
 }
 
-// ── Autoloader & Bootstrap ──────────────────────────────────────────────────
 require __DIR__ . '/vendor/autoload.php';
 
 $app = require __DIR__ . '/bootstrap/app.php';
 
-// ── Run console kernel ──────────────────────────────────────────────────────
 $kernel = $app->make(\Kyqo\Console\Kernel::class);
 $status = $kernel->handle(
-    new \Kyqo\Console\Input\ArgvInput($argv),
-    new \Kyqo\Console\Output\ConsoleOutput()
+    new \Symfony\Component\Console\Input\ArgvInput(),
+    new \Symfony\Component\Console\Output\ConsoleOutput()
 );
 
 exit($status ?? 0);

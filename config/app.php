@@ -1,5 +1,16 @@
 <?php
 
+/**
+ * FIX B2 – removed references to non-existent Service Providers.
+ * Only providers that physically exist in packages/ are listed here.
+ * Providers for packages not yet created (Mail, Queue, View, etc.) are
+ * commented out and will be uncommented when implemented.
+ *
+ * Core services (db, cache, session, auth, view, queue, mail, log, hash,
+ * storage, validator) are already registered directly inside Application
+ * via registerCoreServices(), so they do NOT need a ServiceProvider here.
+ */
+
 return [
 
     'name'     => env('APP_NAME', 'Kyqo'),
@@ -11,23 +22,25 @@ return [
     'cipher'   => 'AES-256-CBC',
 
     'providers' => [
-        // Framework providers
-        \Kyqo\Core\Providers\AppServiceProvider::class,
+        // ── Framework providers (only existing classes) ──────────────────
         \Kyqo\Core\Providers\EventServiceProvider::class,
         \Kyqo\Core\Providers\LogServiceProvider::class,
-        \Kyqo\Database\Providers\DatabaseServiceProvider::class,
-        \Kyqo\Cache\Providers\CacheServiceProvider::class,
-        \Kyqo\Http\Providers\HttpServiceProvider::class,
-        \Kyqo\Auth\Providers\AuthServiceProvider::class,
-        \Kyqo\View\Providers\ViewServiceProvider::class,
-        \Kyqo\Queue\Providers\QueueServiceProvider::class,
-        \Kyqo\Mail\Providers\MailServiceProvider::class,
-        \Kyqo\Console\Providers\ConsoleServiceProvider::class,
 
-        // Application providers
+        // ── Application providers ────────────────────────────────────────
         \App\Providers\AppServiceProvider::class,
         \App\Providers\AuthServiceProvider::class,
         \App\Providers\RouteServiceProvider::class,
+
+        // Uncomment when packages are implemented:
+        // \Kyqo\Core\Providers\AppServiceProvider::class,
+        // \Kyqo\Database\Providers\DatabaseServiceProvider::class,
+        // \Kyqo\Cache\Providers\CacheServiceProvider::class,
+        // \Kyqo\Http\Providers\HttpServiceProvider::class,
+        // \Kyqo\Auth\Providers\AuthServiceProvider::class,
+        // \Kyqo\View\Providers\ViewServiceProvider::class,
+        // \Kyqo\Queue\Providers\QueueServiceProvider::class,
+        // \Kyqo\Mail\Providers\MailServiceProvider::class,
+        // \Kyqo\Console\Providers\ConsoleServiceProvider::class,
     ],
 
     'aliases' => [
