@@ -24,7 +24,9 @@
     "autoload": {
         "psr-4": {
             "Kyqo\\": "packages/",
-            "App\\": "app/"
+            "App\\": "app/",
+            "Database\\Factories\\": "database/factories/",
+            "Database\\Seeders\\": "database/seeders/"
         },
         "files": [
             "packages/core/src/Support/helpers.php"

@@ -8,10 +8,6 @@ use Kyqo\Core\Events\Dispatcher;
 
 /**
  * The Kyqo Application.
- *
- * FIX A1: Added setBasePath() so bootstrap/app.php can call
- *         Application::getInstance()->setBasePath(...) after the fact.
- *         __construct() now accepts an optional $basePath.
  */
 class Application extends Container
 {
@@ -32,7 +28,6 @@ class Application extends Container
         $this->registerCoreAliases();
     }
 
-    /** FIX A1 – allow late binding of the base path (called by bootstrap/app.php). */
     public function setBasePath(string $basePath): static
     {
         $this->basePath = rtrim($basePath, '\/');
@@ -41,7 +36,7 @@ class Application extends Container
 
     public function version(): string { return static::VERSION; }
 
-    // ── Path helpers ───────────────────────────────────────────────────────
+    // ── Path helpers ─────────────────────────────────────────────────────
 
     public function basePath(string $path = ''): string
     {
@@ -78,7 +73,7 @@ class Application extends Container
         return $this->basePath('public' . ($path !== '' ? DIRECTORY_SEPARATOR . $path : ''));
     }
 
-    // ── Bootstrap ─────────────────────────────────────────────────────────
+    // ── Bootstrap ─────────────────────────────────────────────────────
 
     public function bootstrap(): void
     {
@@ -115,7 +110,7 @@ class Application extends Container
         }
     }
 
-    // ── Core bindings ─────────────────────────────────────────────────────
+    // ── Core bindings ───────────────────────────────────────────────
 
     protected function registerBaseBindings(): void
     {
@@ -132,7 +127,6 @@ class Application extends Container
         $this->instance(ConfigRepository::class, $config);
         $this->instance('config', $config);
 
-        // Lazy-load config from disk only once basePath is set
         $this->singleton('config.loaded', function () use ($config) {
             $configPath = $this->configPath();
             if ($this->basePath !== '' && is_dir($configPath)) {
@@ -199,8 +193,31 @@ class Application extends Container
         $this->singleton('request', fn () => \Kyqo\Http\Request::capture());
         $this->singleton(\Kyqo\Http\Request::class, fn () => $this->make('request'));
 
-        // 10. Session
-        $this->singleton('session', fn () => new \Kyqo\Http\Session\Store());
+        // 10. Session (supports file / database / redis via config/session.php)
+        $this->singleton('session', function () {
+            $this->make('config.loaded');
+            $driver = $this->make('config')->get('session.driver', 'file');
+
+            $handler = match ($driver) {
+                'database' => new \Kyqo\Http\Session\DatabaseSessionHandler(
+                    $this->make(\Kyqo\Database\DatabaseManager::class),
+                    $this->make('config')->get('session.table', 'sessions')
+                ),
+                'redis' => (function () {
+                    $redis = new \Redis();
+                    $cfg   = $this->make('config')->get('session', []);
+                    $redis->connect($cfg['host'] ?? '127.0.0.1', $cfg['port'] ?? 6379);
+                    if (!empty($cfg['password'])) $redis->auth($cfg['password']);
+                    return new \Kyqo\Http\Session\RedisSessionHandler(
+                        $redis,
+                        $this->make('config')->get('session.lifetime', 7200) * 60
+                    );
+                })(),
+                default => null, // PHP native file sessions
+            };
+
+            return new \Kyqo\Http\Session\Store($handler);
+        });
         $this->singleton(\Kyqo\Http\Session\Store::class, fn () => $this->make('session'));
 
         // 11. URL Generator
@@ -249,10 +266,14 @@ class Application extends Container
         });
         $this->singleton(\Kyqo\Http\Validation\ValidatorFactory::class, fn () => $this->make('validator'));
 
-        // 16. Mail
+        // 16. Mail (inject view engine so Mailable::view() works)
         $this->singleton('mail', function () {
             $this->make('config.loaded');
-            return new \Kyqo\Mail\MailManager($this->make('config')->get('mail', []));
+            $manager = new \Kyqo\Mail\MailManager($this->make('config')->get('mail', []));
+            try {
+                $manager->setViewEngine($this->make(\Kyqo\View\Engine::class));
+            } catch (\Throwable) {}
+            return $manager;
         });
         $this->singleton(\Kyqo\Mail\MailManager::class, fn () => $this->make('mail'));
 
@@ -260,8 +281,7 @@ class Application extends Container
         $this->singleton(\Kyqo\Console\Kernel::class, fn () => new \Kyqo\Console\Kernel($this));
         $this->singleton('console', fn () => $this->make(\Kyqo\Console\Kernel::class));
 
-        // 18. FIX A3 — bind App\Http\Kernel so make(\Kyqo\Http\Kernel::class) resolves
-        //     to the application subclass.  The framework Kernel is bound as the app Kernel.
+        // 18. HTTP Kernel
         $this->singleton(\Kyqo\Http\Kernel::class, function () {
             $this->make('config.loaded');
             $debug = (bool) $this->make('config')->get('app.debug', false);

@@ -1,22 +1,39 @@
 <?php
 
 return [
+    /*
+    |--------------------------------------------------------------------------
+    | Session Driver
+    |--------------------------------------------------------------------------
+    | Supported: "file", "database", "redis"
+    |
+    | file     → PHP native file-based sessions (default)
+    | database → Requires a `sessions` table (see DatabaseSessionHandler)
+    | redis    → Requires the ext-redis extension
+    |
+    */
+    'driver' => env('SESSION_DRIVER', 'file'),
 
-    'driver'       => env('SESSION_DRIVER', 'file'),
-    'lifetime'     => env('SESSION_LIFETIME', 120),
-    'expire_on_close' => false,
-    'encrypt'      => false,
-    'files'        => storage_path('framework/sessions'),
-    'connection'   => env('SESSION_CONNECTION'),
-    'table'        => 'sessions',
-    'store'        => env('SESSION_STORE'),
-    'lottery'      => [2, 100],
-    'cookie'       => env('SESSION_COOKIE', 'kyqo_session'),
-    'path'         => '/',
-    'domain'       => env('SESSION_DOMAIN'),
-    'secure'       => env('SESSION_SECURE_COOKIE'),
-    'http_only'    => true,
-    'same_site'    => 'lax',
-    'partitioned'  => false,
+    /*
+    |--------------------------------------------------------------------------
+    | Session Lifetime (minutes)
+    |--------------------------------------------------------------------------
+    */
+    'lifetime' => (int) env('SESSION_LIFETIME', 120),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Session Table (database driver only)
+    |--------------------------------------------------------------------------
+    */
+    'table' => env('SESSION_TABLE', 'sessions'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Redis Connection (redis driver only)
+    |--------------------------------------------------------------------------
+    */
+    'host'     => env('REDIS_HOST',     '127.0.0.1'),
+    'port'     => (int) env('REDIS_PORT', 6379),
+    'password' => env('REDIS_PASSWORD', null),
 ];
