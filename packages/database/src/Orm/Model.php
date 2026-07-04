@@ -2,62 +2,93 @@
 
 namespace Kyqo\Database\Orm;
 
-use JsonSerializable;
-use Kyqo\Core\Application;
 use Kyqo\Database\DatabaseManager;
-use Kyqo\Database\QueryBuilder;
+use Kyqo\Database\Orm\Concerns\HasRelations;
+use Kyqo\Database\Orm\Concerns\HasCasts;
 
 /**
- * Kyqo ORM Base Model — full ActiveRecord implementation.
+ * Base ORM Model.
  *
- * FIX #5: query() and where() now return a ModelQueryBuilder so that
- * get() / first() return typed Model instances, not raw arrays.
- * hydratePublic() is added as a public static entry point for ModelQueryBuilder.
+ * Provides Active-Record-style CRUD, mass assignment, timestamps,
+ * attribute casting, and relation support.
  *
- * FIX #11: guessTable() uses a basic inflector that handles:
- *   - words ending in 'y'  → ies  (Category → categories)
- *   - words ending in s/x/z/ch/sh → es  (Box → boxes)
- *   - everything else → +s
+ * Usage:
+ *   class Post extends Model {
+ *       protected string $table    = 'posts';
+ *       protected array  $fillable = ['title', 'body'];
+ *       protected array  $casts    = ['published' => 'bool'];
+ *   }
+ *
+ *   Post::create(['title' => 'Hello']);
+ *   Post::where('published', true)->get();
+ *   $post->user;  // belongsTo auto-loaded via __get
  */
-abstract class Model implements JsonSerializable
+class Model
 {
-    protected string $table;
-    protected string $primaryKey  = 'id';
-    protected bool   $timestamps  = true;
-    protected array  $fillable    = [];
-    protected array  $guarded     = ['*'];
-    protected array  $hidden      = [];
-    protected array  $casts       = [];
-    protected array  $attributes  = [];
-    protected array  $original    = [];
-    protected bool   $exists      = false;
+    use HasRelations;
+    use HasCasts;
 
-    // ---- Constructor --------------------------------------------------------
+    protected string  $table            = '';
+    protected string  $primaryKey       = 'id';
+    protected bool    $incrementing     = true;
+    protected bool    $timestamps       = true;
+    protected array   $fillable         = [];
+    protected array   $guarded          = ['*'];
+    protected array   $hidden           = [];
+    protected array   $attributes       = [];
+    protected array   $original         = [];
+    protected bool    $exists           = false;
+
+    protected static ?DatabaseManager $resolver = null;
 
     public function __construct(array $attributes = [])
     {
-        if (!isset($this->table)) {
-            $this->table = $this->guessTable();
-        }
         $this->fill($attributes);
-        $this->syncOriginal();
     }
 
-    // ---- Static query API ---------------------------------------------------
+    // ---- Static helpers -------------------------------------------------------
 
-    /**
-     * FIX #5: returns a ModelQueryBuilder — get()/first() yield Model instances.
-     */
+    public static function setConnectionResolver(DatabaseManager $resolver): void
+    {
+        static::$resolver = $resolver;
+    }
+
+    protected static function getResolver(): DatabaseManager
+    {
+        if (static::$resolver !== null) {
+            return static::$resolver;
+        }
+        // Fall back to the global application container
+        return \Kyqo\Core\Application::getInstance()->make(DatabaseManager::class);
+    }
+
+    public function getTable(): string
+    {
+        if ($this->table !== '') return $this->table;
+        $base = strtolower(class_basename(static::class));
+        return $base . 's';
+    }
+
+    public function getPrimaryKey(): string { return $this->primaryKey; }
+
     public static function query(): ModelQueryBuilder
     {
-        $instance = new static();
-        $db       = static::db();
-        return new ModelQueryBuilder(
-            $db->connection(),
-            $instance->getTable(),
-            static::class
-        );
+        return (new static())->newQuery();
     }
+
+    public function newQuery(): ModelQueryBuilder
+    {
+        $connection = static::getResolver()->connection();
+        $qb         = $connection->table($this->getTable());
+        return new ModelQueryBuilder($qb, static::class);
+    }
+
+    public function newQueryWithoutScopes(): ModelQueryBuilder
+    {
+        return $this->newQuery();
+    }
+
+    // ---- CRUD ---------------------------------------------------------------
 
     public static function all(): array
     {
@@ -66,97 +97,64 @@ abstract class Model implements JsonSerializable
 
     public static function find(mixed $id): ?static
     {
-        $model = new static();
-        return static::query()->find($id, $model->primaryKey);
+        return static::query()->where((new static())->getPrimaryKey(), '=', $id)->first();
     }
 
     public static function findOrFail(mixed $id): static
     {
         $model = static::find($id);
         if ($model === null) {
-            throw new \RuntimeException(
-                static::class . ' with id [' . $id . '] not found.'
-            );
+            throw new \RuntimeException(static::class . " with ID [{$id}] not found.");
         }
         return $model;
-    }
-
-    /**
-     * FIX #5: returns ModelQueryBuilder — results are hydrated.
-     */
-    public static function where(string $column, mixed $operatorOrValue, mixed $value = null): ModelQueryBuilder
-    {
-        $qb = static::query();
-        return $value === null
-            ? $qb->where($column, $operatorOrValue)
-            : $qb->where($column, $operatorOrValue, $value);
     }
 
     public static function create(array $attributes): static
     {
-        $model = new static($attributes);
-        $model->save();
-        return $model;
+        $instance = new static($attributes);
+        $instance->save();
+        return $instance;
     }
 
-    public static function firstOrCreate(array $conditions, array $extra = []): static
+    public static function firstOrCreate(array $attributes, array $values = []): static
     {
-        $qb = static::query();
-        foreach ($conditions as $col => $val) {
-            $qb->where($col, $val);
-        }
-        $existing = $qb->first();
-        if ($existing !== null) {
-            return $existing;
-        }
-        return static::create(array_merge($conditions, $extra));
+        $instance = static::query()->where(array_keys($attributes)[0], '=', array_values($attributes)[0])->first();
+        if ($instance !== null) return $instance;
+        return static::create(array_merge($attributes, $values));
     }
 
-    // ---- Instance CRUD ------------------------------------------------------
+    public static function updateOrCreate(array $attributes, array $values = []): static
+    {
+        $instance = static::query()->where(array_keys($attributes)[0], '=', array_values($attributes)[0])->first();
+        if ($instance !== null) {
+            $instance->update($values);
+            return $instance;
+        }
+        return static::create(array_merge($attributes, $values));
+    }
 
     public function save(): bool
     {
-        if ($this->timestamps) {
-            $now = date('Y-m-d H:i:s');
-            if (!$this->exists) {
-                $this->attributes['created_at'] = $now;
-            }
-            $this->attributes['updated_at'] = $now;
-        }
+        $connection = static::getResolver()->connection();
+        $this->fireTimestamps();
 
-        $qb = static::db()->table($this->table);
+        $data = $this->getDirtyForPersistence();
 
         if ($this->exists) {
-            $dirty = $this->getDirty();
-            if (empty($dirty)) {
-                return true;
-            }
-            $qb->where($this->primaryKey, $this->attributes[$this->primaryKey])->update($dirty);
+            if (empty($data)) return true;
+            $connection->table($this->getTable())
+                ->where($this->primaryKey, '=', $this->attributes[$this->primaryKey])
+                ->update($data);
         } else {
-            $id = $qb->insertGetId($this->attributes);
-            $this->attributes[$this->primaryKey] = $id;
+            $id = $connection->table($this->getTable())->insertGetId($data);
+            if ($this->incrementing) {
+                $this->attributes[$this->primaryKey] = $id;
+            }
             $this->exists = true;
         }
 
         $this->syncOriginal();
         return true;
-    }
-
-    public function delete(): bool
-    {
-        if (!$this->exists) {
-            return false;
-        }
-        static::db()->table($this->table)
-            ->where($this->primaryKey, $this->attributes[$this->primaryKey])
-            ->delete();
-        $this->exists = false;
-        return true;
-    }
-
-    public function fresh(): static
-    {
-        return static::findOrFail($this->attributes[$this->primaryKey]);
     }
 
     public function update(array $attributes): bool
@@ -165,7 +163,18 @@ abstract class Model implements JsonSerializable
         return $this->save();
     }
 
-    // ---- Attribute management -----------------------------------------------
+    public function delete(): bool
+    {
+        if (!$this->exists) return false;
+        $connection = static::getResolver()->connection();
+        $connection->table($this->getTable())
+            ->where($this->primaryKey, '=', $this->attributes[$this->primaryKey])
+            ->delete();
+        $this->exists = false;
+        return true;
+    }
+
+    // ---- Attributes ---------------------------------------------------------
 
     public function fill(array $attributes): static
     {
@@ -177,34 +186,36 @@ abstract class Model implements JsonSerializable
         return $this;
     }
 
-    public function setAttribute(string $key, mixed $value): void
+    public function setAttribute(string $key, mixed $value): static
     {
+        if ($this->hasCast($key)) {
+            $value = $this->decastAttribute($key, $value);
+        }
         $this->attributes[$key] = $value;
-    }
-
-    public function getAttribute(string $key, mixed $default = null): mixed
-    {
-        return $this->castAttribute($key, $this->attributes[$key] ?? $default);
-    }
-
-    public function syncOriginal(): static
-    {
-        $this->original = $this->attributes;
         return $this;
     }
 
-    public function isDirty(?string $key = null): bool
+    public function getAttribute(string $key): mixed
     {
-        if ($key !== null) {
-            return ($this->attributes[$key] ?? null) !== ($this->original[$key] ?? null);
-        }
-        foreach ($this->attributes as $k => $v) {
-            if (!array_key_exists($k, $this->original) || $this->original[$k] !== $v) {
-                return true;
+        if (array_key_exists($key, $this->attributes)) {
+            $value = $this->attributes[$key];
+            if ($this->hasCast($key)) {
+                return $this->castAttribute($key, $value);
             }
+            return $value;
         }
-        return false;
+        // Lazy-load relation
+        if (method_exists($this, $key)) {
+            if (!$this->relationLoaded($key)) {
+                $result = $this->{$key}()->getResults();
+                $this->setRelation($key, $result);
+            }
+            return $this->relations[$key];
+        }
+        return null;
     }
+
+    public function getAttributes(): array { return $this->attributes; }
 
     public function getDirty(): array
     {
@@ -217,117 +228,104 @@ abstract class Model implements JsonSerializable
         return $dirty;
     }
 
-    public function getOriginal(?string $key = null, mixed $default = null): mixed
+    public function isDirty(string ...$keys): bool
     {
-        return $key !== null ? ($this->original[$key] ?? $default) : $this->original;
+        $dirty = $this->getDirty();
+        if (empty($keys)) return !empty($dirty);
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $dirty)) return true;
+        }
+        return false;
     }
 
-    public function isFillable(string $key): bool
+    public function syncOriginal(): static
     {
-        if (in_array($key, $this->guarded, true)) {
-            return false;
-        }
-        if ($this->guarded === ['*']) {
-            return !empty($this->fillable) && in_array($key, $this->fillable, true);
-        }
-        return true;
+        $this->original = $this->attributes;
+        return $this;
     }
 
-    public function getTable(): string  { return $this->table; }
-    public function getKey(): mixed     { return $this->attributes[$this->primaryKey] ?? null; }
-    public function exists(): bool      { return $this->exists; }
-
-    // ---- Casting ------------------------------------------------------------
-
-    protected function castAttribute(string $key, mixed $value): mixed
+    protected function getDirtyForPersistence(): array
     {
-        if (!isset($this->casts[$key])) {
-            return $value;
+        return $this->exists ? $this->getDirty() : $this->attributes;
+    }
+
+    protected function isFillable(string $key): bool
+    {
+        if (!empty($this->fillable)) {
+            return in_array($key, $this->fillable, true);
         }
-        return match ($this->casts[$key]) {
-            'int', 'integer'   => (int) $value,
-            'float', 'double'  => (float) $value,
-            'bool', 'boolean'  => (bool) $value,
-            'array', 'json'    => is_string($value) ? json_decode($value, true) : $value,
-            'datetime'         => $value ? new \DateTimeImmutable($value) : null,
-            'hashed'           => $value,
-            default            => $value,
-        };
+        if (in_array('*', $this->guarded, true)) return false;
+        return !in_array($key, $this->guarded, true);
+    }
+
+    protected function fireTimestamps(): void
+    {
+        if (!$this->timestamps) return;
+        $now = date('Y-m-d H:i:s');
+        if (!$this->exists) {
+            $this->attributes['created_at'] = $this->attributes['created_at'] ?? $now;
+        }
+        $this->attributes['updated_at'] = $now;
     }
 
     // ---- Serialization ------------------------------------------------------
 
     public function toArray(): array
     {
-        $attributes = $this->attributes;
-        foreach ($this->hidden as $key) {
-            unset($attributes[$key]);
+        $arr = [];
+        foreach ($this->attributes as $key => $value) {
+            if (in_array($key, $this->hidden, true)) continue;
+            $arr[$key] = $this->hasCast($key) ? $this->castAttribute($key, $value) : $value;
         }
-        return $attributes;
+        foreach ($this->relations as $key => $value) {
+            if (is_array($value)) {
+                $arr[$key] = array_map(fn ($m) => $m instanceof self ? $m->toArray() : $m, $value);
+            } else {
+                $arr[$key] = $value instanceof self ? $value->toArray() : $value;
+            }
+        }
+        return $arr;
     }
 
-    public function toJson(): string
+    public function toJson(int $flags = 0): string
     {
-        return json_encode($this->toArray(), JSON_THROW_ON_ERROR);
+        return json_encode($this->toArray(), $flags);
     }
 
-    public function jsonSerialize(): mixed { return $this->toArray(); }
     public function __get(string $key): mixed  { return $this->getAttribute($key); }
     public function __set(string $key, mixed $value): void { $this->setAttribute($key, $value); }
     public function __isset(string $key): bool { return isset($this->attributes[$key]); }
+    public function __unset(string $key): void { unset($this->attributes[$key]); }
 
-    // ---- Hydration ----------------------------------------------------------
+    // ---- Static proxy -------------------------------------------------------
 
-    /**
-     * Internal hydration — called from within this class and ModelQueryBuilder.
-     */
-    protected static function hydrate(array $row): static
+    public static function __callStatic(string $method, array $args): mixed
     {
-        $model             = new static();
-        $model->attributes = $row;
-        $model->exists     = true;
-        $model->syncOriginal();
-        return $model;
+        return (new static())->newQuery()->{$method}(...$args);
     }
 
-    /**
-     * FIX #5: public entry point for ModelQueryBuilder.
-     * Delegates to the protected hydrate() so subclasses can still override it.
-     */
-    public static function hydratePublic(array $row): static
+    public static function where(string $column, string $operator, mixed $value = null): ModelQueryBuilder
     {
-        return static::hydrate($row);
+        return static::query()->where($column, $operator, $value);
     }
 
-    // ---- DB connection ------------------------------------------------------
-
-    protected static function db(): DatabaseManager
+    public static function whereIn(string $column, array $values): ModelQueryBuilder
     {
-        return Application::getInstance()->make(DatabaseManager::class);
+        return static::query()->whereIn($column, $values);
     }
 
-    // ---- Table name guess ---------------------------------------------------
-
-    /**
-     * FIX #11: basic English inflector.
-     *   Category  → categories
-     *   Box       → boxes
-     *   User      → users
-     *   Person    → persons  (irregular forms require explicit $table)
-     */
-    protected function guessTable(): string
+    public static function orderBy(string $column, string $direction = 'ASC'): ModelQueryBuilder
     {
-        $class = basename(str_replace('\\', '/', static::class));
-        // snake_case
-        $snake = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $class));
+        return static::query()->orderBy($column, $direction);
+    }
 
-        // Basic pluralisation rules
-        if (str_ends_with($snake, 'y') && !in_array(substr($snake, -2, 1), ['a','e','i','o','u'], true)) {
-            return substr($snake, 0, -1) . 'ies';   // category → categories
-        }
-        if (preg_match('/(s|x|z|ch|sh)$/', $snake)) {
-            return $snake . 'es';                    // box → boxes
-        }
-        return $snake . 's';                         // user → users
+    public static function limit(int $n): ModelQueryBuilder
+    {
+        return static::query()->limit($n);
+    }
+
+    public static function paginate(int $perPage = 15, int $page = 1): array
+    {
+        return static::query()->paginate($perPage, $page);
     }
 }
