@@ -4,11 +4,6 @@ namespace Kyqo\Queue;
 
 /**
  * Kyqo Queue Manager
- *
- * FIX m4: dispatch() now verifies that the handle() method is public before
- * invoking it via reflection. A protected or private handle() would cause a
- * fatal Error at runtime; instead a BadMethodCallException is thrown early
- * with a clear diagnostic message.
  */
 class QueueManager
 {
@@ -41,31 +36,16 @@ class QueueManager
         return $this->connection()->later($delay, $job, $queue);
     }
 
-    /**
-     * Dispatch a job immediately by resolving its handle() dependencies via the container.
-     *
-     * FIX m4: ReflectionMethod::isPublic() is checked before invocation.
-     * A non-public handle() raises BadMethodCallException immediately, with
-     * a clear message, rather than a cryptic Error at call time.
-     *
-     * @throws \BadMethodCallException if handle() is absent or not public.
-     * @throws \RuntimeException       if a primitive parameter cannot be resolved.
-     */
     public function dispatch(object $job): mixed
     {
         if (!method_exists($job, 'handle')) {
-            throw new \BadMethodCallException(
-                get_class($job) . '::handle() does not exist.'
-            );
+            throw new \BadMethodCallException(get_class($job) . '::handle() does not exist.');
         }
 
         $method = new \ReflectionMethod($job, 'handle');
 
-        // FIX m4: reject non-public handle() early.
         if (!$method->isPublic()) {
-            throw new \BadMethodCallException(
-                get_class($job) . '::handle() must be public to be dispatched.'
-            );
+            throw new \BadMethodCallException(get_class($job) . '::handle() must be public to be dispatched.');
         }
 
         $app    = \Kyqo\Core\Application::getInstance();
@@ -97,6 +77,7 @@ class QueueManager
         return match ($config['driver']) {
             'sync'     => new Drivers\SyncQueue(),
             'database' => new Drivers\DatabaseQueue($config),
+            'redis'    => new Drivers\RedisQueue($config),
             default    => throw new \InvalidArgumentException(
                 "Queue driver [{$config['driver']}] not supported."
             ),

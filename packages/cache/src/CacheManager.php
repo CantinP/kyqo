@@ -18,9 +18,6 @@ class CacheManager
         $this->config = $config;
     }
 
-    /**
-     * Get a cache store.
-     */
     public function store(?string $name = null): StoreInterface
     {
         $name ??= $this->config['default'] ?? 'file';
@@ -72,9 +69,11 @@ class CacheManager
         $config = $this->config['stores'][$name] ?? throw new \InvalidArgumentException("Cache store [{$name}] not defined.");
 
         return match ($config['driver']) {
-            'file'  => new Stores\FileStore($config['path'] ?? sys_get_temp_dir()),
-            'array' => new Stores\ArrayStore(),
-            default => throw new \InvalidArgumentException("Cache driver [{$config['driver']}] not supported."),
+            'file'      => new Stores\FileStore($config['path'] ?? sys_get_temp_dir()),
+            'array'     => new Stores\ArrayStore(),
+            'redis'     => new Stores\RedisStore($config),
+            'memcached' => new Stores\MemcachedStore($config),
+            default     => throw new \InvalidArgumentException("Cache driver [{$config['driver']}] not supported."),
         };
     }
 }
