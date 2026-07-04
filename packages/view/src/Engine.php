@@ -11,12 +11,14 @@ class Engine
     protected array   $sectionStack = [];
     protected ?string $layout       = null;
     protected array   $layoutData   = [];
+    protected Compiler $compiler;
 
     public function __construct(array $paths = [], string $compiledPath = '', bool $cache = true)
     {
         $this->paths        = array_map(fn ($p) => realpath($p) ?: $p, $paths);
-        $this->compiledPath = $compiledPath;
+        $this->compiledPath = $compiledPath ?: sys_get_temp_dir() . '/kyqo_views';
         $this->cache        = $cache;
+        $this->compiler     = new Compiler($this->compiledPath, $cache);
     }
 
     public function make(string $template, array $data = []): string
@@ -36,17 +38,23 @@ class Engine
         return $content;
     }
 
-    /**
-     * FIX m2: ob_get_clean() can return false if the output buffer stack
-     * is unexpectedly empty. Now throws a RuntimeException instead of
-     * silently returning an empty string.
-     */
     protected function renderFile(string $____path, array $____data): string
     {
         $____engine = $this;
 
+        // Compile directives if template uses .kyqo.php extension
+        if (str_ends_with($____path, '.kyqo.php')) {
+            if ($this->compiler->isExpired($____path)) {
+                $____path = $this->compiler->compile($____path);
+            } else {
+                $____path = $this->compiler->getCompiledPath($____path);
+            }
+        }
+
         ob_start();
         (static function () use ($____path, $____data, $____engine) {
+            /** @var Engine $kyqoEngine */
+            $kyqoEngine = $____engine;
             extract($____data, EXTR_SKIP);
             include $____path;
         })();
@@ -55,8 +63,7 @@ class Engine
 
         if ($output === false) {
             throw new \RuntimeException(
-                "Failed to capture output buffer while rendering [{$____path}]. " .
-                'Output buffer stack may have been corrupted by the template.'
+                "Failed to capture output buffer while rendering [{$____path}]."
             );
         }
 
@@ -120,9 +127,7 @@ class Engine
                 $candidate = $basePath . DIRECTORY_SEPARATOR . $templatePath . $ext;
                 $real      = realpath($candidate);
 
-                if ($real === false) {
-                    continue;
-                }
+                if ($real === false) continue;
 
                 $allowedBase = realpath($basePath) ?: $basePath;
                 if (!str_starts_with($real, $allowedBase . DIRECTORY_SEPARATOR) && $real !== $allowedBase) {
