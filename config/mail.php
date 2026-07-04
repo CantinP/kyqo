@@ -7,32 +7,21 @@ return [
     'mailers' => [
         'smtp' => [
             'transport'  => 'smtp',
-            'host'       => env('MAIL_HOST', 'smtp.mailgun.org'),
-            'port'       => env('MAIL_PORT', 587),
+            'host'       => env('MAIL_HOST', '127.0.0.1'),
+            'port'       => (int) env('MAIL_PORT', 587),
             'encryption' => env('MAIL_ENCRYPTION', 'tls'),
             'username'   => env('MAIL_USERNAME'),
             'password'   => env('MAIL_PASSWORD'),
-            'timeout'    => null,
+            'timeout'    => 30,
         ],
         'log' => [
             'transport' => 'log',
-            'channel'   => env('MAIL_LOG_CHANNEL'),
-        ],
-        'array' => [
-            'transport' => 'array',
         ],
     ],
 
     'from' => [
         'address' => env('MAIL_FROM_ADDRESS', 'hello@kyqo.dev'),
-        'name'    => env('MAIL_FROM_NAME', 'Kyqo'),
-    ],
-
-    'markdown' => [
-        'theme' => 'default',
-        'paths' => [
-            resource_path('views/vendor/mail'),
-        ],
+        'name'    => env('MAIL_FROM_NAME', env('APP_NAME', 'Kyqo')),
     ],
 
 ];
