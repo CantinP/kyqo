@@ -3,24 +3,29 @@
 namespace Kyqo\Http\Session;
 
 /**
- * Session store — thin wrapper around PHP native sessions.
+ * Session store — supports native PHP, database, and redis drivers.
  *
- * FIX #7: constructor does NOT call session_start() when a session is
- * already active (PHP_SESSION_ACTIVE). bootstrap/app.php is responsible
- * for starting the session with secure cookie parameters; this class
- * must not override that.
+ * The driver is chosen via the $handler parameter:
+ *   - null                    → PHP native file sessions
+ *   - DatabaseSessionHandler  → database-backed sessions
+ *   - RedisSessionHandler     → Redis-backed sessions
+ *
+ * Usage in config/session.php:
+ *   'driver' => 'database', // or 'redis', 'file'
  */
 class Store
 {
     protected string $flashPrefix = '_flash_';
 
-    public function __construct()
+    public function __construct(private readonly ?\SessionHandlerInterface $handler = null)
     {
-        // FIX #7: only start if not already running.
+        if ($this->handler !== null) {
+            session_set_save_handler($this->handler, true);
+        }
+
         if (session_status() === PHP_SESSION_NONE) {
             session_start();
         }
-        // PHP_SESSION_DISABLED → let it surface naturally (server mis-config).
     }
 
     // ---- Basic read/write ---------------------------------------------------

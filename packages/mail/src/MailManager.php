@@ -7,41 +7,52 @@ use Kyqo\Mail\Transports\SmtpTransport;
 /**
  * Mail Manager
  *
- * Manages mail transports and provides a simple send interface.
+ * Supports both low-level Message/Closure sending and Mailable objects.
  *
- * Usage:
+ * Usage (Mailable):
+ *   Mail::send(new WelcomeMail($user));
+ *   Mail::to('user@example.com')->send(new WelcomeMail($user));
+ *
+ * Usage (Closure / Message):
  *   Mail::send(function (Message $msg) {
- *       $msg->to('user@example.com')
- *           ->subject('Hello')
- *           ->html(view('emails.welcome', ['user' => $user]));
+ *       $msg->to('user@example.com')->subject('Hello')->html('...');
  *   });
  */
 class MailManager
 {
     protected array $config;
     protected array $transportInstances = [];
+    protected ?\Kyqo\View\Engine $viewEngine = null;
 
     public function __construct(array $config = [])
     {
         $this->config = $config;
     }
 
-    /**
-     * Send a message via a callback or a pre-built Message instance.
-     */
-    public function send(\Closure|Message $message): void
+    public function setViewEngine(\Kyqo\View\Engine $engine): static
     {
-        if ($message instanceof \Closure) {
+        $this->viewEngine = $engine;
+        return $this;
+    }
+
+    /**
+     * Send a message via Mailable, Closure, or pre-built Message.
+     */
+    public function send(Mailable|\Closure|Message $message): void
+    {
+        if ($message instanceof Mailable) {
+            $msg = $message->toMessage($this->viewEngine);
+        } elseif ($message instanceof \Closure) {
             $msg = new Message();
             $message($msg);
         } else {
             $msg = $message;
         }
 
-        // Apply global defaults
         if (empty($msg->getTo())) {
             throw new \RuntimeException('Mail: No recipient specified.');
         }
+
         if ($msg->getFrom() === null) {
             $msg->from(
                 $this->config['from']['address'] ?? 'noreply@localhost',
@@ -52,9 +63,6 @@ class MailManager
         $this->resolveTransport()->send($msg);
     }
 
-    /**
-     * Alias for send() — sends a view-rendered HTML email.
-     */
     public function to(string $address, string $name = ''): PendingMail
     {
         return (new PendingMail($this))->to($address, $name);
