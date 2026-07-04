@@ -9,19 +9,27 @@ use Kyqo\Http\Middleware\ValidateBodySize;
 use Kyqo\Http\Middleware\VerifyCsrfToken;
 use Kyqo\Http\Router\Router;
 
+/**
+ * HTTP Kernel
+ *
+ * CSRF is now in the global $middleware stack so every
+ * non-GET/HEAD/OPTIONS request that is not in api/* or webhooks/*
+ * is protected automatically — no manual ->middleware('csrf') needed.
+ *
+ * The VerifyCsrfToken middleware auto-excludes:
+ *   - GET / HEAD / OPTIONS requests
+ *   - api/*  paths
+ *   - webhooks/* paths
+ *
+ * To add more exceptions, extend VerifyCsrfToken and override $except.
+ */
 class Kernel
 {
-    /**
-     * FIX D3: VerifyCsrfToken removed from the global middleware stack.
-     * It is already available as 'csrf' in $routeMiddleware and applied
-     * automatically to the 'web' middleware group in App\Http\Kernel.
-     * Having it here AND as a named alias caused double-verification on
-     * every route that used ->middleware('csrf').
-     */
     protected array $middleware = [
         ValidateBodySize::class,
         SecurityHeaders::class,
         ThrottleRequests::class,
+        VerifyCsrfToken::class,  // ← CSRF now global
     ];
 
     protected array $routeMiddleware = [

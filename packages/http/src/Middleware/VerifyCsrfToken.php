@@ -8,12 +8,20 @@ use Kyqo\Http\Response;
 /**
  * CSRF Token Middleware
  *
- * FIX M2: XSRF-TOKEN cookie no longer carries HttpOnly.
- * XSRF-TOKEN is intentionally readable by JavaScript (Axios, Angular, etc.)
- * so that SPAs can include it in the X-XSRF-TOKEN request header.
- * HttpOnly belongs only on session cookies, not on the CSRF double-submit cookie.
+ * Automatically active on all non-GET/HEAD/OPTIONS routes that are not
+ * in the $except list (api/*, webhooks/*).
  *
- * FIX #10 (maintained): Secure flag is conditional on HTTPS.
+ * The CSRF token is stored in the session under '_kyqo_csrf_token' and
+ * is also sent back to the browser as the XSRF-TOKEN cookie (readable
+ * by JS / Axios / Angular).
+ *
+ * Forms must include:
+ *   <?= csrf_field() ?>
+ *   → <input type="hidden" name="_token" value="...">
+ *
+ * SPAs / AJAX must send one of:
+ *   X-CSRF-TOKEN: {token}
+ *   X-XSRF-TOKEN: {cookie value}
  */
 class VerifyCsrfToken
 {
@@ -100,10 +108,6 @@ class VerifyCsrfToken
         return false;
     }
 
-    /**
-     * FIX M2: No HttpOnly on XSRF-TOKEN — JS frameworks must be able to read it.
-     * FIX #10: Secure only when HTTPS.
-     */
     protected function addCookieToResponse(mixed $response, Request $request): mixed
     {
         if ($response instanceof Response) {

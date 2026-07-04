@@ -2,84 +2,51 @@
 
 namespace Kyqo\Database;
 
-use PDO;
-use PDOException;
-use PDOStatement;
+use Kyqo\Database\Grammar\Grammar;
+use Kyqo\Database\Grammar\SqliteGrammar;
 
 /**
- * Wraps a PDO connection with query helpers.
+ * Wraps a PDO connection and provides the query builder entry point.
  *
- * All user-supplied values go through prepared statements — never interpolated.
- *
- * FIX N4: run() now explicitly checks that prepare() returns a PDOStatement
- * and that execute() succeeds even when PDO is not in ERRMODE_EXCEPTION,
- * preventing false success and unexpected `false` values downstream.
+ * Driver detection for SQLite:
+ *   - Passes SqliteGrammar to the QueryBuilder so that SQLite-specific
+ *     SQL differences (AUTOINCREMENT, datetime(), no FOR UPDATE, etc.)
+ *     are handled transparently.
  */
 class Connection
 {
-    protected PDO    $pdo;
-    protected string $driver;
-    protected string $database;
-    protected int    $queryCount = 0;
+    private Grammar $grammar;
 
-    public function __construct(PDO $pdo, string $driver = 'mysql', string $database = '')
-    {
-        $this->pdo      = $pdo;
-        $this->driver   = $driver;
-        $this->database = $database;
+    public function __construct(
+        private \PDO   $pdo,
+        private string $driver = 'mysql',
+        private string $tablePrefix = ''
+    ) {
+        $this->grammar = $this->makeGrammar($driver);
     }
 
-    // ---- Raw query helpers --------------------------------------------------
-
-    public function select(string $sql, array $bindings = []): array
+    private function makeGrammar(string $driver): Grammar
     {
-        $stmt = $this->run($sql, $bindings);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return match (strtolower($driver)) {
+            'sqlite' => new SqliteGrammar(),
+            default  => new Grammar(),
+        };
     }
 
-    public function selectOne(string $sql, array $bindings = []): ?array
+    public function table(string $table): QueryBuilder
     {
-        $stmt = $this->run($sql, $bindings);
-        $row  = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row !== false ? $row : null;
+        return new QueryBuilder($this->pdo, $this->tablePrefix . $table, $this->grammar);
     }
 
-    public function insert(string $sql, array $bindings = []): bool
-    {
-        $this->run($sql, $bindings);
-        return true;
-    }
+    public function getPdo(): \PDO { return $this->pdo; }
+    public function getDriver(): string { return $this->driver; }
+    public function getGrammar(): Grammar { return $this->grammar; }
 
-    public function update(string $sql, array $bindings = []): int
-    {
-        $stmt = $this->run($sql, $bindings);
-        return $stmt->rowCount();
-    }
+    public function beginTransaction(): void  { $this->pdo->beginTransaction(); }
+    public function commit(): void            { $this->pdo->commit(); }
+    public function rollback(): void          { $this->pdo->rollBack(); }
 
-    public function delete(string $sql, array $bindings = []): int
-    {
-        $stmt = $this->run($sql, $bindings);
-        return $stmt->rowCount();
-    }
-
-    public function statement(string $sql, array $bindings = []): bool
-    {
-        $this->run($sql, $bindings);
-        return true;
-    }
-
-    public function lastInsertId(): string|false
-    {
-        return $this->pdo->lastInsertId();
-    }
-
-    // ---- Transactions -------------------------------------------------------
-
-    public function beginTransaction(): bool  { return $this->pdo->beginTransaction(); }
-    public function commit(): bool            { return $this->pdo->commit(); }
-    public function rollback(): bool          { return $this->pdo->rollBack(); }
-
-    public function transaction(callable $callback): mixed
+    public function transaction(\Closure $callback): mixed
     {
         $this->beginTransaction();
         try {
@@ -92,54 +59,29 @@ class Connection
         }
     }
 
-    // ---- QueryBuilder factory -----------------------------------------------
-
-    public function table(string $table): QueryBuilder
-    {
-        return new QueryBuilder($this, $table);
-    }
-
-    // ---- Schema factory -----------------------------------------------------
-
-    public function schema(): Schema\SchemaBuilder
-    {
-        return new Schema\SchemaBuilder($this);
-    }
-
-    // ---- Accessors ----------------------------------------------------------
-
-    public function getPdo(): PDO       { return $this->pdo; }
-    public function getDriver(): string { return $this->driver; }
-    public function getDatabase(): string { return $this->database; }
-    public function queryCount(): int   { return $this->queryCount; }
-
-    // ---- Internals ----------------------------------------------------------
-
-    /**
-     * FIX N4: Guard against prepare() returning false (PDO not in ERRMODE_EXCEPTION)
-     * and execute() failing silently.
-     *
-     * @throws PDOException|\ RuntimeException on prepare or execute failure.
-     */
-    protected function run(string $sql, array $bindings = []): PDOStatement
+    public function statement(string $sql, array $bindings = []): bool
     {
         $stmt = $this->pdo->prepare($sql);
+        return $stmt->execute($bindings);
+    }
 
-        if ($stmt === false) {
-            $err = $this->pdo->errorInfo();
-            throw new \RuntimeException(
-                "PDO prepare failed [{$err[0]}]: " . ($err[2] ?? 'unknown error') . " — SQL: {$sql}"
-            );
-        }
+    public function select(string $sql, array $bindings = []): array
+    {
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($bindings);
+        return $stmt->fetchAll();
+    }
 
-        if ($stmt->execute($bindings) === false) {
-            $err = $stmt->errorInfo();
-            throw new \RuntimeException(
-                "PDO execute failed [{$err[0]}]: " . ($err[2] ?? 'unknown error') . " — SQL: {$sql}"
-            );
-        }
+    public function scalar(string $sql, array $bindings = []): mixed
+    {
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($bindings);
+        return $stmt->fetchColumn();
+    }
 
-        $this->queryCount++;
-        return $stmt;
+    /** Return the last inserted ID. */
+    public function lastInsertId(): string|int
+    {
+        return $this->pdo->lastInsertId();
     }
 }
