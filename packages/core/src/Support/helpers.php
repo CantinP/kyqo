@@ -93,38 +93,23 @@ if (!function_exists('cache')) {
 }
 
 if (!function_exists('storage_path')) {
-    function storage_path(string $path = ''): string
-    {
-        return app()->storagePath($path);
-    }
+    function storage_path(string $path = ''): string { return app()->storagePath($path); }
 }
 
 if (!function_exists('resource_path')) {
-    function resource_path(string $path = ''): string
-    {
-        return app()->resourcePath($path);
-    }
+    function resource_path(string $path = ''): string { return app()->resourcePath($path); }
 }
 
 if (!function_exists('database_path')) {
-    function database_path(string $path = ''): string
-    {
-        return app()->databasePath($path);
-    }
+    function database_path(string $path = ''): string { return app()->databasePath($path); }
 }
 
 if (!function_exists('base_path')) {
-    function base_path(string $path = ''): string
-    {
-        return app()->basePath($path);
-    }
+    function base_path(string $path = ''): string { return app()->basePath($path); }
 }
 
 if (!function_exists('public_path')) {
-    function public_path(string $path = ''): string
-    {
-        return app()->publicPath($path);
-    }
+    function public_path(string $path = ''): string { return app()->publicPath($path); }
 }
 
 if (!function_exists('collect')) {
@@ -142,10 +127,7 @@ if (!function_exists('bcrypt')) {
 }
 
 if (!function_exists('now')) {
-    function now(): \DateTimeImmutable
-    {
-        return new \DateTimeImmutable();
-    }
+    function now(): \DateTimeImmutable { return new \DateTimeImmutable(); }
 }
 
 if (!function_exists('abort')) {
@@ -219,17 +201,13 @@ if (!function_exists('method_field')) {
 }
 
 /**
- * Translate a key using the Translator service.
- * Falls back to the key itself when no translation exists.
+ * Translate a key via the Translator service.
  */
 if (!function_exists('trans')) {
     function trans(string $key, array $replace = [], ?string $locale = null): string
     {
-        try {
-            return app('translator')->get($key, $replace, $locale);
-        } catch (\Throwable) {
-            return $key;
-        }
+        try { return app('translator')->get($key, $replace, $locale); }
+        catch (\Throwable) { return $key; }
     }
 }
 
@@ -240,7 +218,6 @@ if (!function_exists('__')) {
     }
 }
 
-/** Short alias for trans(). */
 if (!function_exists('lang')) {
     function lang(string $key, array $replace = [], ?string $locale = null): string
     {
@@ -249,10 +226,31 @@ if (!function_exists('lang')) {
 }
 
 /**
- * Broadcast an event.
+ * Translate with pluralisation.
  *
  * Usage:
- *   broadcast(new OrderShipped($order));
+ *   trans_choice('messages.apples', 0)           // 'Pas de pomme'
+ *   trans_choice('messages.apples', 5)           // '5 pommes'
+ *   trans_choice('messages.items', 1)            // '1 item'
+ *   choice('messages.items', 3)                  // '3 items'  (alias)
+ */
+if (!function_exists('trans_choice')) {
+    function trans_choice(string $key, int|float $number, array $replace = [], ?string $locale = null): string
+    {
+        try { return app('translator')->choice($key, $number, $replace, $locale); }
+        catch (\Throwable) { return $key; }
+    }
+}
+
+if (!function_exists('choice')) {
+    function choice(string $key, int|float $number, array $replace = [], ?string $locale = null): string
+    {
+        return trans_choice($key, $number, $replace, $locale);
+    }
+}
+
+/**
+ * Broadcast an event.
  */
 if (!function_exists('broadcast')) {
     function broadcast(\Kyqo\Broadcasting\ShouldBroadcast $event): void
@@ -317,11 +315,8 @@ if (!function_exists('throw_unless')) {
 if (!function_exists('rescue')) {
     function rescue(callable $callback, mixed $rescue = null): mixed
     {
-        try {
-            return $callback();
-        } catch (\Throwable $e) {
-            return value($rescue, $e);
-        }
+        try { return $callback(); }
+        catch (\Throwable $e) { return value($rescue, $e); }
     }
 }
 
@@ -333,12 +328,6 @@ if (!function_exists('event')) {
 }
 
 if (!function_exists('notify')) {
-    /**
-     * Send a notification to a notifiable.
-     *
-     * Usage:
-     *   notify($user, new InvoicePaid($invoice));
-     */
     function notify(object $notifiable, \Kyqo\Notifications\Notification $notification): void
     {
         app(\Kyqo\Notifications\NotificationSender::class)->send($notifiable, $notification);
