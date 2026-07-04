@@ -99,16 +99,18 @@ class Compiler
             '/@while\((.+?)\)/'                     => '<?php while ($1): ?>',
             '/@endwhile/'                           => '<?php endwhile; ?>',
 
-            // forelse
+            // forelse — @empty (bare) must come AFTER @empty($var) to avoid mis-match
             '/@forelse\((.+?)\)/'                   => '<?php $__forelseArr = $1; if (!empty($__forelseArr)): foreach ($__forelseArr as $__forelseKey => $__forelseVal): ?>',
-            '/@empty/'                              => '<?php endforeach; else: ?>',
             '/@endforelse/'                         => '<?php endif; ?>',
 
-            // isset / empty
+            // isset / empty with argument — FIX D1: these MUST appear before bare @empty
             '/@isset\((.+?)\)/'                     => '<?php if (isset($1)): ?>',
             '/@endisset/'                           => '<?php endif; ?>',
             '/@empty\((.+?)\)/'                     => '<?php if (empty($1)): ?>',
             '/@endempty/'                           => '<?php endif; ?>',
+
+            // FIX D1: bare @empty (used inside @forelse) AFTER @empty($var)
+            '/@empty/'                              => '<?php endforeach; else: ?>',
 
             // switch
             '/@switch\((.+?)\)/'                    => '<?php switch ($1): ?>',

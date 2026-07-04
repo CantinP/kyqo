@@ -70,7 +70,18 @@ class Request
     public function scheme(): string { return (!empty($this->server['HTTPS']) && $this->server['HTTPS'] !== 'off') ? 'https' : 'http'; }
     public function host(): string   { return $this->server['HTTP_HOST'] ?? 'localhost'; }
     public function isSecure(): bool { return $this->scheme() === 'https'; }
-    public function ip(): ?string    { return $this->server['HTTP_X_FORWARDED_FOR'] ?? $this->server['REMOTE_ADDR'] ?? null; }
+
+    /**
+     * FIX D4: X-Forwarded-For can be a comma-separated list; take only the first entry.
+     */
+    public function ip(): ?string
+    {
+        $xff = $this->server['HTTP_X_FORWARDED_FOR'] ?? null;
+        if ($xff !== null) {
+            return trim(explode(',', $xff)[0]);
+        }
+        return $this->server['REMOTE_ADDR'] ?? null;
+    }
 
     // ---- Input --------------------------------------------------------------
 
@@ -232,12 +243,16 @@ class Request
 
     public function expectsJson(): bool { return $this->wantsJson() || $this->isJson(); }
 
+    /**
+     * FIX D2: pass $validator->errors() (array) to ValidationException,
+     * not the Validator object itself.
+     */
     public function validate(array $rules): array
     {
         $factory   = \Kyqo\Core\Application::getInstance()->make(\Kyqo\Http\Validation\ValidatorFactory::class);
         $validator = $factory->make($this->all(), $rules);
         if ($validator->fails()) {
-            throw new \Kyqo\Http\Validation\ValidationException($validator);
+            throw new \Kyqo\Http\Validation\ValidationException($validator->errors());
         }
         return $validator->validated();
     }
