@@ -24,6 +24,15 @@ namespace Kyqo\Queue;
  * Config key `queue.failed.database` controls the DSN for the failed-jobs
  * table (defaults to the same DSN as the default database queue connection).
  * Set `queue.failed.driver` to 'null' to disable failed-job recording.
+ *
+ * FIX AUDIT-8 (note): recordFailedJob() uses serialize() to capture the job
+ * payload. PHP's serialize() will emit an E_NOTICE (PHP < 8.1) or throw a
+ * \Error (PHP 8.1+ with Fiber/Closure) if the job graph contains a Closure
+ * or resource. If your jobs may contain closures, either:
+ *   a) implement __serialize()/__unserialize() on the job to exclude them, or
+ *   b) swap serialize() for json_encode() with a custom normaliser.
+ * recordFailedJob() wraps the call in a try/catch so this will never mask
+ * the original dispatch exception.
  */
 class QueueManager
 {
@@ -81,7 +90,7 @@ class QueueManager
 
         foreach ($params as $param) {
             $type = $param->getType();
-            if ($type && !$type->isBuiltin()) {
+            if ($type instanceof \ReflectionNamedType && !$type->isBuiltin()) {
                 $args[] = $app->make($type->getName());
             } elseif ($param->isDefaultValueAvailable()) {
                 $args[] = $param->getDefaultValue();
@@ -110,6 +119,10 @@ class QueueManager
      * otherwise logs via the Logger ('log' alias) or error_log() fallback.
      * Never throws — a failure inside the failure handler must not mask the
      * original exception.
+     *
+     * FIX AUDIT-8: serialize() is wrapped in its own try/catch so that a
+     * job containing a Closure or resource cannot prevent the failure from
+     * being recorded. On serialize failure we fall back to get_class($job).
      */
     protected function recordFailedJob(object $job, \Throwable $e): void
     {
@@ -122,8 +135,15 @@ class QueueManager
 
         $connectionName = $this->config['default'] ?? 'sync';
         $queue          = $this->config['connections'][$connectionName]['queue'] ?? 'default';
-        $payload        = serialize($job);
-        $exception      = sprintf(
+
+        // FIX AUDIT-8: guard serialize() against Closure/resource in job graph.
+        try {
+            $payload = serialize($job);
+        } catch (\Throwable) {
+            $payload = get_class($job) . ' (not serializable)';
+        }
+
+        $exception = sprintf(
             '%s: %s in %s:%d\n%s',
             get_class($e),
             $e->getMessage(),

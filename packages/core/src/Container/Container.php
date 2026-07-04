@@ -6,6 +6,7 @@ use Closure;
 use ReflectionClass;
 use ReflectionFunction;
 use ReflectionMethod;
+use ReflectionNamedType;
 use Kyqo\Core\Contracts\Container as ContainerContract;
 use Kyqo\Core\Exceptions\ContainerException;
 
@@ -216,26 +217,57 @@ class Container implements ContainerContract
         );
     }
 
+    /**
+     * Resolve constructor/method parameter dependencies.
+     *
+     * FIX AUDIT (PHP 8+ union/intersection types):
+     * ReflectionParameter::getType() can return a ReflectionUnionType or
+     * ReflectionIntersectionType on PHP 8.0+ / 8.1+. Neither has isBuiltin()
+     * nor getName(), so calling those methods would throw a fatal error.
+     *
+     * Resolution strategy for non-named types:
+     *   - If the parameter has a default value, use it.
+     *   - Otherwise throw a ContainerException with a helpful message.
+     *
+     * Only ReflectionNamedType is handled for auto-wiring; union/intersection
+     * types require an explicit primitive override to be injected.
+     */
     protected function resolveDependencies(array $parameters, array $primitives = []): array
     {
         $dependencies = [];
+
         foreach ($parameters as $parameter) {
+            // Explicit primitive override always wins.
             if (array_key_exists($parameter->name, $primitives)) {
                 $dependencies[] = $primitives[$parameter->name];
                 continue;
             }
 
             $type = $parameter->getType();
-            if ($type && !$type->isBuiltin()) {
+
+            // FIX: only auto-wire when the type is a single named class/interface.
+            // ReflectionUnionType (string|int) and ReflectionIntersectionType
+            // (A&B) are not auto-wireable — fall through to default value.
+            if ($type instanceof ReflectionNamedType && !$type->isBuiltin()) {
                 $dependencies[] = $this->make($type->getName());
-            } elseif ($parameter->isDefaultValueAvailable()) {
-                $dependencies[] = $parameter->getDefaultValue();
-            } else {
-                throw new ContainerException(
-                    "Cannot resolve parameter [{$parameter->name}] for [{$type?->getName()}]."
-                );
+                continue;
             }
+
+            if ($parameter->isDefaultValueAvailable()) {
+                $dependencies[] = $parameter->getDefaultValue();
+                continue;
+            }
+
+            $typeName = $type instanceof ReflectionNamedType
+                ? $type->getName()
+                : ($type !== null ? (string) $type : 'mixed');
+
+            throw new ContainerException(
+                "Cannot resolve parameter [\${$parameter->name}] of type [{$typeName}]."
+                . ' Provide a primitive override or add a default value.'
+            );
         }
+
         return $dependencies;
     }
 

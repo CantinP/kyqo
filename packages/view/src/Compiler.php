@@ -20,9 +20,15 @@ namespace Kyqo\View;
  *   @auth @guest @endauth @endguest
  *   @csrf  @method('PUT')
  *   @dump(...) @dd(...)
- *   {{ $expr }}  — escaped output
- *   {!! $expr !!} — raw output
- *   {{-- comment --}} — removed
+ *
+ * Output syntax:
+ *   {{ $expr }}    — HTML-escaped output (htmlspecialchars, ENT_QUOTES|ENT_SUBSTITUTE)
+ *   {!! $expr !!}  — RAW unescaped output.
+ *                    ⚠️  SECURITY: the developer is solely responsible for
+ *                    ensuring $expr is safe before using {!! !!}. Never pass
+ *                    unsanitised user input through raw output directives or
+ *                    an XSS vulnerability will result.
+ *   {{-- comment --}} — removed at compile time
  *
  * FIX AUDIT-2: compileDirectives() now detects preg_replace() failures
  *              (PREG_BACKTRACK_LIMIT_ERROR, malformed pattern in @-directives,
@@ -68,6 +74,7 @@ class Compiler
         $content = $this->safeReplace('/\{\{--.*?--\}\}/s', '', $content, '{{-- --}}');
 
         // Raw output {!! ... !!}
+        // ⚠️  No escaping — see class-level PHPDoc for security note.
         $content = $this->safeReplace('/\{!!\s*(.+?)\s*!!\}/s', '<?php echo $1; ?>', $content, '{!! !!}');
 
         // Escaped output {{ ... }}

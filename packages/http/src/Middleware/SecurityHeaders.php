@@ -11,11 +11,18 @@ use Kyqo\Http\Response;
  * FIX SEC-4: X-Kyqo-CSP-Nonce header removed — exposing the nonce via a
  *            response header defeats its purpose and enables XSS bypass.
  *            The nonce is available to templates via $request->getAttribute('csp_nonce').
+ *
+ * FIX AUDIT-8: Aligned X-Frame-Options with CSP frame-ancestors.
+ *              Previously X-Frame-Options was 'SAMEORIGIN' while
+ *              frame-ancestors was 'none' — contradictory policies.
+ *              Both are now 'DENY' / 'none' (most restrictive; change to
+ *              SAMEORIGIN + 'self' together if embedding is required).
  */
 class SecurityHeaders
 {
     protected array $headers = [
-        'X-Frame-Options'               => 'SAMEORIGIN',
+        // FIX AUDIT-8: DENY aligns with frame-ancestors 'none' in the CSP below.
+        'X-Frame-Options'               => 'DENY',
         'X-Content-Type-Options'        => 'nosniff',
         'X-XSS-Protection'              => '1; mode=block',
         'Strict-Transport-Security'     => 'max-age=31536000; includeSubDomains; preload',
@@ -25,6 +32,13 @@ class SecurityHeaders
         'Cross-Origin-Resource-Policy'  => 'same-origin',
     ];
 
+    /**
+     * CSP template.
+     *
+     * frame-ancestors 'none': no framing allowed from any origin.
+     * This must be consistent with X-Frame-Options above.
+     * To allow same-origin framing change both to 'self' / 'SAMEORIGIN'.
+     */
     protected string $csp = "default-src 'self'; script-src 'self' 'nonce-{nonce}'; style-src 'self' 'nonce-{nonce}'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests";
 
     public function handle(Request $request, \Closure $next): mixed
