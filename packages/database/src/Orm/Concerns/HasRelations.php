@@ -6,97 +6,137 @@ use Kyqo\Database\Orm\Relations\BelongsTo;
 use Kyqo\Database\Orm\Relations\BelongsToMany;
 use Kyqo\Database\Orm\Relations\HasMany;
 use Kyqo\Database\Orm\Relations\HasOne;
+use Kyqo\Database\Orm\Relations\MorphMany;
+use Kyqo\Database\Orm\Relations\MorphOne;
+use Kyqo\Database\Orm\Relations\MorphTo;
 
-/**
- * Trait HasRelations
- *
- * Mixed into Model to provide relation factory methods and lazy / eager loading.
- */
 trait HasRelations
 {
     protected array $relations = [];
 
-    public function hasOne(string $related, string $foreignKey = '', string $localKey = 'id'): HasOne
+    // ── Standard relations ───────────────────────────────────────────────────
+
+    public function hasOne(string $related, string $foreignKey = null, string $localKey = null): HasOne
     {
         $instance   = new $related();
-        $foreignKey = $foreignKey ?: $this->guessForeignKey();
-        $query      = $instance->newQuery()->query;  // unwrap to raw QueryBuilder
-        $query->setModel($related);
+        $foreignKey ??= $this->getForeignKeyName();
+        $localKey   ??= $this->getPrimaryKey();
+        $query      = $instance->newQuery()->getQuery();
         return new HasOne($query, $this, $foreignKey, $localKey);
     }
 
-    public function hasMany(string $related, string $foreignKey = '', string $localKey = 'id'): HasMany
+    public function hasMany(string $related, string $foreignKey = null, string $localKey = null): HasMany
     {
         $instance   = new $related();
-        $foreignKey = $foreignKey ?: $this->guessForeignKey();
-        $query      = $instance->newQuery()->query;
-        $query->setModel($related);
+        $foreignKey ??= $this->getForeignKeyName();
+        $localKey   ??= $this->getPrimaryKey();
+        $query      = $instance->newQuery()->getQuery();
         return new HasMany($query, $this, $foreignKey, $localKey);
     }
 
-    public function belongsTo(string $related, string $foreignKey = '', string $ownerKey = 'id'): BelongsTo
+    public function belongsTo(string $related, string $foreignKey = null, string $ownerKey = null): BelongsTo
     {
         $instance   = new $related();
-        $foreignKey = $foreignKey ?: (strtolower(class_basename($related)) . '_id');
-        $query      = $instance->newQuery()->query;
-        $query->setModel($related);
+        $foreignKey ??= $instance->getForeignKeyName();
+        $ownerKey   ??= $instance->getPrimaryKey();
+        $query      = $instance->newQuery()->getQuery();
         return new BelongsTo($query, $this, $foreignKey, $ownerKey);
     }
 
     public function belongsToMany(
         string $related,
-        string $pivotTable  = '',
-        string $foreignKey  = '',
-        string $relatedKey  = '',
-        string $parentKey   = 'id',
-        string $relatedPKey = 'id'
+        string $pivotTable  = null,
+        string $foreignKey  = null,
+        string $relatedKey  = null
     ): BelongsToMany {
         $instance   = new $related();
-        $foreignKey = $foreignKey ?: $this->guessForeignKey();
-        $relatedKey = $relatedKey ?: (strtolower(class_basename($related)) . '_id');
-
-        if ($pivotTable === '') {
-            // Convention: alphabetical order of the two table names joined by _
-            $tables = [
-                strtolower(class_basename(static::class)),
-                strtolower(class_basename($related)),
-            ];
-            sort($tables);
-            $pivotTable = implode('_', $tables);
-        }
-
-        $query = $instance->newQuery()->query;
-        $query->setModel($related);
-
-        return new BelongsToMany(
-            $query, $this, $pivotTable,
-            $foreignKey, $relatedKey,
-            $parentKey, $relatedPKey
-        );
+        $foreignKey ??= $this->getForeignKeyName();
+        $relatedKey ??= $instance->getForeignKeyName();
+        $pivotTable ??= $this->guessPivotTable($related);
+        $query      = $instance->newQuery()->getQuery();
+        return new BelongsToMany($query, $this, $pivotTable, $foreignKey, $relatedKey, $instance->getPrimaryKey());
     }
 
-    // ── Relation registry ────────────────────────────────────────────────────
+    // ── Polymorphic relations ────────────────────────────────────────────
 
-    public function setRelation(string $name, mixed $value): static
+    /**
+     * Define a polymorphic inverse relation (belongs to a morphable parent).
+     *
+     * @param  string|null $name   The morph name (e.g. 'commentable').
+     *                             Defaults to the calling method name.
+     */
+    public function morphTo(string $name = null): MorphTo
     {
-        $this->relations[$name] = $value;
+        // Guess morph name from the calling method if not provided
+        if ($name === null) {
+            $trace  = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2);
+            $name   = $trace[1]['function'] ?? 'morphable';
+        }
+
+        $morphType  = $name . '_type';
+        $morphId    = $name . '_id';
+        $connection = static::getResolver()->connection();
+        $query      = $connection->table($this->getTable());
+
+        return new MorphTo($query, $this, $morphType, $morphId);
+    }
+
+    /**
+     * A model has one related record of any type via a polymorphic relation.
+     *
+     * @param  string $related    Fully qualified related model class.
+     * @param  string $name       Morph name (e.g. 'imageable').
+     * @param  string|null $localKey
+     */
+    public function morphOne(string $related, string $name, string $localKey = null): MorphOne
+    {
+        $instance = new $related();
+        $localKey ??= $this->getPrimaryKey();
+        $query    = $instance->newQuery()->getQuery();
+        return new MorphOne($query, $this, $related, $name, $localKey);
+    }
+
+    /**
+     * A model has many related records of any type via a polymorphic relation.
+     */
+    public function morphMany(string $related, string $name, string $localKey = null): MorphMany
+    {
+        $instance = new $related();
+        $localKey ??= $this->getPrimaryKey();
+        $query    = $instance->newQuery()->getQuery();
+        return new MorphMany($query, $this, $related, $name, $localKey);
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    public function relationLoaded(string $key): bool
+    {
+        return array_key_exists($key, $this->relations);
+    }
+
+    public function setRelation(string $key, mixed $value): static
+    {
+        $this->relations[$key] = $value;
         return $this;
     }
 
-    public function relationLoaded(string $name): bool
+    public function getRelation(string $key): mixed
     {
-        return array_key_exists($name, $this->relations);
+        return $this->relations[$key] ?? null;
     }
 
-    public function getRelation(string $name): mixed
-    {
-        return $this->relations[$name] ?? null;
-    }
-
-    // ── Helpers ──────────────────────────────────────────────────────────────
-
-    protected function guessForeignKey(): string
+    protected function getForeignKeyName(): string
     {
         return strtolower(class_basename(static::class)) . '_id';
+    }
+
+    protected function guessPivotTable(string $related): string
+    {
+        $models = [
+            strtolower(class_basename(static::class)),
+            strtolower(class_basename($related)),
+        ];
+        sort($models);
+        return implode('_', $models);
     }
 }
