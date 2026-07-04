@@ -58,7 +58,6 @@ class Model
         if (static::$resolver !== null) {
             return static::$resolver;
         }
-        // Fall back to the global application container
         return \Kyqo\Core\Application::getInstance()->make(DatabaseManager::class);
     }
 
@@ -116,16 +115,30 @@ class Model
         return $instance;
     }
 
+    /**
+     * FIX B4 – Apply ALL $attributes columns as WHERE conditions, not just the first.
+     */
     public static function firstOrCreate(array $attributes, array $values = []): static
     {
-        $instance = static::query()->where(array_keys($attributes)[0], '=', array_values($attributes)[0])->first();
+        $qb = static::query();
+        foreach ($attributes as $col => $val) {
+            $qb->where($col, '=', $val);
+        }
+        $instance = $qb->first();
         if ($instance !== null) return $instance;
         return static::create(array_merge($attributes, $values));
     }
 
+    /**
+     * FIX B4 – Apply ALL $attributes columns as WHERE conditions, not just the first.
+     */
     public static function updateOrCreate(array $attributes, array $values = []): static
     {
-        $instance = static::query()->where(array_keys($attributes)[0], '=', array_values($attributes)[0])->first();
+        $qb = static::query();
+        foreach ($attributes as $col => $val) {
+            $qb->where($col, '=', $val);
+        }
+        $instance = $qb->first();
         if ($instance !== null) {
             $instance->update($values);
             return $instance;
