@@ -7,6 +7,9 @@ namespace Kyqo\Http;
  *
  * Wraps PHP superglobals into an OOP interface with helpers for input,
  * file uploads, headers, JSON, validation, and route parameters.
+ *
+ * FIX AUDIT-3: method() only honours the _method override when the real
+ * HTTP method is POST, preventing spoofing via GET query strings.
  */
 class Request
 {
@@ -48,13 +51,23 @@ class Request
 
     // ---- Method & URI -------------------------------------------------------
 
+    /**
+     * FIX AUDIT-3: _method spoofing is only honoured when the real request
+     * method is POST.  Honouring it on GET requests would allow attackers to
+     * trigger state-changing routes via a crafted link / CSRF vector.
+     */
     public function method(): string
     {
-        $override = $this->post['_method'] ?? null;
-        if ($override && in_array(strtoupper($override), ['PUT', 'PATCH', 'DELETE'], true)) {
-            return strtoupper($override);
+        $real = strtoupper($this->server['REQUEST_METHOD'] ?? 'GET');
+
+        if ($real === 'POST') {
+            $override = $this->post['_method'] ?? null;
+            if ($override && in_array(strtoupper($override), ['PUT', 'PATCH', 'DELETE'], true)) {
+                return strtoupper($override);
+            }
         }
-        return strtoupper($this->server['REQUEST_METHOD'] ?? 'GET');
+
+        return $real;
     }
 
     public function uri(): string

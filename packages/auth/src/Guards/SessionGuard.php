@@ -9,10 +9,13 @@ use Kyqo\Auth\Providers\DatabaseUserProvider;
 /**
  * Session-based authentication guard.
  *
- * FIX C1: recallFromCookie() now validates the cookie format with a strict
- * regex before any processing. Malformed, empty, or injected cookie values
- * are rejected immediately — preventing a userId=0 match via (int) cast
- * on a cookie that contains no pipe separator.
+ * FIX C1: recallFromCookie() validates the cookie format with a strict
+ * regex before any processing.
+ *
+ * FIX AUDIT-5: guardSession() now calls session_set_cookie_params() before
+ * session_start() to ensure the PHP session cookie is sent with
+ * HttpOnly, SameSite=Lax, and Secure (when on HTTPS) attributes.
+ * This prevents session hijacking via XSS and CSRF.
  *
  * Pattern: "<digits>|<80 hex chars>"  (id|sha256(rawToken) = 10+1+80 chars)
  */
@@ -116,11 +119,6 @@ class SessionGuard implements GuardInterface
 
     /**
      * FIX C1: strict format validation before any processing.
-     *
-     * Cookie must match "<digits>|<80 hex chars>".
-     * bin2hex(random_bytes(40)) produces exactly 80 hex characters.
-     * Any cookie that does not match is silently discarded — no DB hit,
-     * no (int) cast on garbage input.
      */
     protected function recallFromCookie(): mixed
     {
@@ -136,8 +134,6 @@ class SessionGuard implements GuardInterface
 
         [$userId, $rawToken] = explode('|', $token, 2);
 
-        // userId was validated as \d+ so cast is safe; 0 is still rejected
-        // by verifyRememberToken() if no user with id=0 exists.
         $userId = (int) $userId;
         if ($userId <= 0) {
             return null;
@@ -192,9 +188,29 @@ class SessionGuard implements GuardInterface
         return $_SESSION[$this->sessionKey] ?? null;
     }
 
+    /**
+     * FIX AUDIT-5: configure session cookie params before session_start().
+     *
+     * Sets HttpOnly, SameSite=Lax, and Secure (on HTTPS) on the PHP session
+     * cookie. These params must be set before the session is opened;
+     * calling session_set_cookie_params() on an already-active session is
+     * a no-op in PHP, so the guard checks PHP_SESSION_NONE first.
+     */
     protected function guardSession(): void
     {
         if (session_status() === PHP_SESSION_NONE) {
+            $secure   = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+            $lifetime = (int) ($this->config['session_lifetime'] ?? 0);
+
+            session_set_cookie_params([
+                'lifetime' => $lifetime,
+                'path'     => '/',
+                'domain'   => $this->config['session_domain'] ?? '',
+                'secure'   => $secure,
+                'httponly' => true,
+                'samesite' => $this->config['session_samesite'] ?? 'Lax',
+            ]);
+
             session_start();
         }
     }

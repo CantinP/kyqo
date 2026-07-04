@@ -11,6 +11,14 @@ use Kyqo\Mail\Message;
  * Supports STARTTLS, AUTH LOGIN / AUTH PLAIN, plain text + HTML multipart,
  * and file attachments.
  *
+ * FIX AUDIT-1: send() body is now wrapped in try/finally so the socket
+ * is always closed — even when expect() or any other helper throws.
+ *
+ * FIX AUDIT-2: attachment paths are validated against an allowed root
+ * directory (config key 'attachment_root', defaults to sys_get_temp_dir()).
+ * Any path that resolves outside that root throws an exception instead of
+ * silently reading an arbitrary file.
+ *
  * For production use with OAuth / advanced TLS needs, swap this transport
  * for one backed by a library such as Symfony Mailer or PHPMailer.
  */
@@ -38,55 +46,61 @@ class SmtpTransport
             throw new \RuntimeException("SMTP: Cannot connect to {$host}:{$port} — {$errstr} ({$errno})");
         }
 
-        $this->expect(220);
-        $this->write('EHLO ' . ($this->config['ehlo'] ?? gethostname()));
-        $ehlo = $this->readAll();
-
-        if ($encryption === 'tls') {
-            $this->write('STARTTLS');
+        // FIX AUDIT-1: always close the socket, even on exception.
+        try {
             $this->expect(220);
-            if (!stream_socket_enable_crypto($this->socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
-                throw new \RuntimeException('SMTP: STARTTLS negotiation failed.');
-            }
             $this->write('EHLO ' . ($this->config['ehlo'] ?? gethostname()));
             $ehlo = $this->readAll();
-        }
 
-        if (!empty($username) && str_contains($ehlo, 'AUTH')) {
-            $this->write('AUTH LOGIN');
-            $this->expect(334);
-            $this->write(base64_encode($username));
-            $this->expect(334);
-            $this->write(base64_encode($password));
-            $this->expect(235);
-        }
+            if ($encryption === 'tls') {
+                $this->write('STARTTLS');
+                $this->expect(220);
+                if (!stream_socket_enable_crypto($this->socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
+                    throw new \RuntimeException('SMTP: STARTTLS negotiation failed.');
+                }
+                $this->write('EHLO ' . ($this->config['ehlo'] ?? gethostname()));
+                $ehlo = $this->readAll();
+            }
 
-        $this->write('MAIL FROM:<' . $fromAddr . '>');
-        $this->expect(250);
+            if (!empty($username) && str_contains($ehlo, 'AUTH')) {
+                $this->write('AUTH LOGIN');
+                $this->expect(334);
+                $this->write(base64_encode($username));
+                $this->expect(334);
+                $this->write(base64_encode($password));
+                $this->expect(235);
+            }
 
-        $allRecipients = array_merge(
-            $message->getTo(),
-            $message->getCc(),
-            $message->getBcc()
-        );
-
-        if (empty($allRecipients)) {
-            throw new \RuntimeException('SMTP: No recipients specified.');
-        }
-
-        foreach ($allRecipients as $rcpt) {
-            $this->write('RCPT TO:<' . $rcpt['address'] . '>');
+            $this->write('MAIL FROM:<' . $fromAddr . '>');
             $this->expect(250);
-        }
 
-        $this->write('DATA');
-        $this->expect(354);
-        $this->write($this->buildRaw($message, $fromAddr, $fromName));
-        $this->write('.');
-        $this->expect(250);
-        $this->write('QUIT');
-        fclose($this->socket);
-        $this->socket = null;
+            $allRecipients = array_merge(
+                $message->getTo(),
+                $message->getCc(),
+                $message->getBcc()
+            );
+
+            if (empty($allRecipients)) {
+                throw new \RuntimeException('SMTP: No recipients specified.');
+            }
+
+            foreach ($allRecipients as $rcpt) {
+                $this->write('RCPT TO:<' . $rcpt['address'] . '>');
+                $this->expect(250);
+            }
+
+            $this->write('DATA');
+            $this->expect(354);
+            $this->write($this->buildRaw($message, $fromAddr, $fromName));
+            $this->write('.');
+            $this->expect(250);
+            $this->write('QUIT');
+        } finally {
+            if (is_resource($this->socket)) {
+                fclose($this->socket);
+            }
+            $this->socket = null;
+        }
     }
 
     protected function buildRaw(Message $msg, string $fromAddr, string $fromName): string
@@ -130,7 +144,8 @@ class SmtpTransport
                 $body .= quoted_printable_encode((string) $msg->getText()) . "\r\n";
             }
             foreach ($msg->getAttachments() as $att) {
-                $content = base64_encode(file_get_contents($att['path']));
+                // FIX AUDIT-2: validate attachment path against allowed root.
+                $content = base64_encode($this->readAttachment($att['path']));
                 $body .= "--{$boundary}\r\n";
                 $body .= "Content-Type: {$att['mime']}; name=\"{$att['name']}\"\r\n";
                 $body .= "Content-Disposition: attachment; filename=\"{$att['name']}\"\r\n";
@@ -156,6 +171,39 @@ class SmtpTransport
         }
 
         return $headers . "\r\n" . $body;
+    }
+
+    /**
+     * FIX AUDIT-2: Read an attachment file, ensuring its real path is within
+     * the configured allowed root to prevent path-traversal attacks.
+     *
+     * Config key: 'attachment_root' (defaults to sys_get_temp_dir()).
+     *
+     * @throws \RuntimeException if the path is outside the allowed root or unreadable.
+     */
+    protected function readAttachment(string $path): string
+    {
+        $allowedRoot = rtrim($this->config['attachment_root'] ?? sys_get_temp_dir(), DIRECTORY_SEPARATOR);
+        $real        = realpath($path);
+
+        if ($real === false) {
+            throw new \RuntimeException("SMTP attachment: file not found or unreadable: [{$path}]");
+        }
+
+        if (!str_starts_with($real, $allowedRoot . DIRECTORY_SEPARATOR)
+            && $real !== $allowedRoot
+        ) {
+            throw new \RuntimeException(
+                "SMTP attachment: path [{$real}] is outside the allowed root [{$allowedRoot}]."
+            );
+        }
+
+        $contents = file_get_contents($real);
+        if ($contents === false) {
+            throw new \RuntimeException("SMTP attachment: could not read file [{$real}]");
+        }
+
+        return $contents;
     }
 
     protected function recipientList(array $recipients): string
@@ -189,7 +237,7 @@ class SmtpTransport
         $response = '';
         while ($line = fgets($this->socket, 1024)) {
             $response .= $line;
-            if ($line[3] === ' ') break; // last line of multi-line response
+            if ($line[3] === ' ') break;
         }
         return $response;
     }
