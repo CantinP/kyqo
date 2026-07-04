@@ -18,6 +18,14 @@ use Kyqo\Database\QueryBuilder;
  * didn't exist before). Instead, the related model instance is resolved from
  * the query's bound model class via setModel / getModel, or directly from
  * the $relatedInstance stored at construction time.
+ *
+ * FIX AUDIT-9: attach() now uses a driver-aware "insert or ignore" syntax
+ *              instead of MySQL-only INSERT IGNORE, ensuring compatibility
+ *              with MySQL/MariaDB, PostgreSQL, and SQLite.
+ *
+ *   MySQL/MariaDB : INSERT IGNORE INTO …
+ *   PostgreSQL    : INSERT INTO … ON CONFLICT DO NOTHING
+ *   SQLite        : INSERT OR IGNORE INTO …
  */
 class BelongsToMany extends Relation
 {
@@ -67,21 +75,34 @@ class BelongsToMany extends Relation
         return $models;
     }
 
-    /** Attach related models via the pivot table. */
+    /**
+     * Attach related models via the pivot table.
+     *
+     * FIX AUDIT-9: uses driver-aware "insert-or-ignore" to avoid duplicate-key
+     * errors without relying on MySQL-only INSERT IGNORE syntax.
+     */
     public function attach(int|array $ids, array $attributes = []): void
     {
         $connection = $this->query->getConnection();
+        $driver     = $connection->getDriver();
+
         foreach ((array) $ids as $id) {
-            $row    = array_merge([
+            $row  = array_merge([
                 $this->foreignKey => $this->getParentKey(),
                 $this->localKey   => $id,
             ], $attributes);
+
             $cols   = implode(', ', array_keys($row));
             $places = implode(', ', array_fill(0, count($row), '?'));
-            $connection->statement(
-                "INSERT IGNORE INTO {$this->pivotTable} ({$cols}) VALUES ({$places})",
-                array_values($row)
-            );
+
+            // FIX AUDIT-9: driver-specific "insert or ignore"
+            $sql = match ($driver) {
+                'pgsql'  => "INSERT INTO {$this->pivotTable} ({$cols}) VALUES ({$places}) ON CONFLICT DO NOTHING",
+                'sqlite' => "INSERT OR IGNORE INTO {$this->pivotTable} ({$cols}) VALUES ({$places})",
+                default  => "INSERT IGNORE INTO {$this->pivotTable} ({$cols}) VALUES ({$places})",  // MySQL/MariaDB
+            };
+
+            $connection->statement($sql, array_values($row));
         }
     }
 

@@ -15,17 +15,27 @@ use Kyqo\Queue\QueueInterface;
  * and migrated to the main LIST on each pop() call.
  *
  * Config keys:
- *   host       (default: 127.0.0.1)
- *   port       (default: 6379)
- *   password   (optional)
- *   database   (default: 0)
- *   prefix     (default: 'kyqo:queue:')
- *   queue      (default: 'default')
- *   timeout    (default: 2.0)
+ *   host            (default: 127.0.0.1)
+ *   port            (default: 6379)
+ *   password        (optional)
+ *   database        (default: 0)
+ *   prefix          (default: 'kyqo:queue:')
+ *   queue           (default: 'default')
+ *   timeout         (default: 2.0)
+ *   allowed_classes (default: false) — passed to unserialize();
+ *                   set to true or an array of FQCNs to deserialize
+ *                   classed objects. Mirrors DatabaseQueue behaviour.
  *
  * FIX AUDIT-4: Connection is lazy — \Redis is created on first use,
  *              not in __construct(), so a down Redis server does not
  *              crash the application at boot time.
+ *
+ * FIX AUDIT-9:
+ *   1. unserialize() now respects config['allowed_classes'] (default false)
+ *      instead of hardcoding true — consistent with DatabaseQueue.
+ *   2. migrateDelayed() is now atomic via a Lua script evaluated with
+ *      Redis EVAL, preventing two concurrent workers from double-pushing
+ *      the same delayed jobs to the ready list.
  */
 class RedisQueue implements QueueInterface
 {
@@ -33,6 +43,25 @@ class RedisQueue implements QueueInterface
     protected array   $config;
     protected string  $prefix;
     protected string  $defaultQueue;
+
+    /**
+     * Lua script for atomic migration of due delayed jobs.
+     *
+     * KEYS[1] = delayed sorted-set key
+     * KEYS[2] = ready list key
+     * ARGV[1] = current Unix timestamp (upper score bound)
+     *
+     * Returns the number of jobs migrated.
+     */
+    private const MIGRATE_LUA = <<<'LUA'
+local jobs = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+if #jobs == 0 then return 0 end
+for _, job in ipairs(jobs) do
+    redis.call('RPUSH', KEYS[2], job)
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+return #jobs
+LUA;
 
     public function __construct(array $config)
     {
@@ -62,7 +91,7 @@ class RedisQueue implements QueueInterface
     }
 
     /**
-     * Migrate any due delayed jobs then LPOP the next ready job.
+     * Atomically migrate due delayed jobs, then LPOP the next ready job.
      */
     public function pop(?string $queue = null): ?object
     {
@@ -78,7 +107,9 @@ class RedisQueue implements QueueInterface
             return null;
         }
 
-        return unserialize($payload['job'], ['allowed_classes' => true]) ?: null;
+        // FIX AUDIT-9: respect allowed_classes from config (default false).
+        $allowedClasses = $this->config['allowed_classes'] ?? false;
+        return unserialize($payload['job'], ['allowed_classes' => $allowedClasses]) ?: null;
     }
 
     public function size(?string $queue = null): int
@@ -87,21 +118,25 @@ class RedisQueue implements QueueInterface
         return (int) $this->connection()->lLen($this->listKey($queue));
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────
+    // ── Helpers ──────────────────────────────────────────────
 
+    /**
+     * FIX AUDIT-9: Atomic delayed-job migration via Lua EVAL.
+     *
+     * Replaces the previous two-step ZRANGEBYSCORE + ZREMRANGEBYSCORE which
+     * had a race window where concurrent workers could push the same job
+     * multiple times into the ready list.
+     *
+     * The Lua script runs atomically on the Redis server — no other command
+     * can interleave between the ZRANGE and ZREM.
+     */
     protected function migrateDelayed(?string $queue): void
     {
-        $now     = time();
-        $delayed = $this->delayedKey($queue);
-        $list    = $this->listKey($queue);
-
-        $jobs = $this->connection()->zRangeByScore($delayed, '-inf', (string) $now);
-        if (empty($jobs)) return;
-
-        foreach ($jobs as $job) {
-            $this->connection()->rPush($list, $job);
-        }
-        $this->connection()->zRemRangeByScore($delayed, '-inf', (string) $now);
+        $this->connection()->eval(
+            self::MIGRATE_LUA,
+            [$this->delayedKey($queue), $this->listKey($queue), (string) time()],
+            2  // number of KEYS
+        );
     }
 
     protected function serialize(object $job, int $availableAt): string
