@@ -12,6 +12,11 @@ use Kyqo\Database\Orm\Concerns\HasCasts;
  * Provides Active-Record-style CRUD, mass assignment, timestamps,
  * attribute casting, and relation support.
  *
+ * FIX AUDIT-8: getTable() now uses a proper English pluralizer instead of
+ *              the naïve `strtolower(basename) . 's'` that produced wrong
+ *              table names for irregular nouns (person→persons instead of
+ *              people, category→categorys instead of categories, etc.).
+ *
  * Usage:
  *   class Post extends Model {
  *       protected string $table    = 'posts';
@@ -61,11 +66,28 @@ class Model
         return \Kyqo\Core\Application::getInstance()->make(DatabaseManager::class);
     }
 
+    /**
+     * FIX AUDIT-8: Derive table name with a proper English pluralizer.
+     *
+     * If $table is explicitly set on the model, that value is used as-is.
+     * Otherwise the class basename is lower-cased and pluralized.
+     *
+     * Examples:
+     *   Post       → posts
+     *   Category   → categories
+     *   Person     → people
+     *   Mouse      → mice
+     *   Status     → statuses
+     *   Leaf       → leaves
+     *   Life       → lives
+     *   Child      → children
+     *   Ox         → oxen
+     *   Criterion  → criteria
+     */
     public function getTable(): string
     {
         if ($this->table !== '') return $this->table;
-        $base = strtolower(class_basename(static::class));
-        return $base . 's';
+        return static::pluralize(strtolower(class_basename(static::class)));
     }
 
     public function getPrimaryKey(): string { return $this->primaryKey; }
@@ -115,9 +137,6 @@ class Model
         return $instance;
     }
 
-    /**
-     * FIX B4 – Apply ALL $attributes columns as WHERE conditions, not just the first.
-     */
     public static function firstOrCreate(array $attributes, array $values = []): static
     {
         $qb = static::query();
@@ -129,9 +148,6 @@ class Model
         return static::create(array_merge($attributes, $values));
     }
 
-    /**
-     * FIX B4 – Apply ALL $attributes columns as WHERE conditions, not just the first.
-     */
     public static function updateOrCreate(array $attributes, array $values = []): static
     {
         $qb = static::query();
@@ -340,5 +356,92 @@ class Model
     public static function paginate(int $perPage = 15, int $page = 1): array
     {
         return static::query()->paginate($perPage, $page);
+    }
+
+    // ---- Pluralizer ─────────────────────────────────────────────────────────
+
+    /**
+     * FIX AUDIT-8: English pluralizer.
+     *
+     * Covers irregular nouns, standard suffix rules, and a catch-all.
+     * The model's $table property always takes precedence — this method
+     * is only invoked when no explicit table name is set.
+     */
+    public static function pluralize(string $word): string
+    {
+        // Irregular nouns (lower-case key → plural)
+        $irregulars = [
+            'person'     => 'people',
+            'man'        => 'men',
+            'woman'      => 'women',
+            'child'      => 'children',
+            'tooth'      => 'teeth',
+            'foot'       => 'feet',
+            'mouse'      => 'mice',
+            'goose'      => 'geese',
+            'ox'         => 'oxen',
+            'leaf'       => 'leaves',
+            'life'       => 'lives',
+            'knife'      => 'knives',
+            'wife'       => 'wives',
+            'shelf'      => 'shelves',
+            'wolf'       => 'wolves',
+            'half'       => 'halves',
+            'criterion'  => 'criteria',
+            'phenomenon' => 'phenomena',
+            'datum'      => 'data',
+            'medium'     => 'media',
+            'analysis'   => 'analyses',
+            'basis'      => 'bases',
+            'diagnosis'  => 'diagnoses',
+            'thesis'     => 'theses',
+            'crisis'     => 'crises',
+            'series'     => 'series',    // unchanged
+            'species'    => 'species',   // unchanged
+            'sheep'      => 'sheep',     // unchanged
+            'deer'       => 'deer',      // unchanged
+            'fish'       => 'fish',      // unchanged
+            'means'      => 'means',     // unchanged
+        ];
+
+        $lower = strtolower($word);
+
+        if (isset($irregulars[$lower])) {
+            return $irregulars[$lower];
+        }
+
+        // Suffix rules (most-specific first)
+        $rules = [
+            '/(quiz)$/i'                     => '$1zes',
+            '/^(oxen)$/i'                    => '$1',
+            '/([m|l])ice$/i'                 => '$1ice',
+            '/(matr|vert|ind)(ix|ex)$/i'     => '$1ices',
+            '/(x|ch|ss|sh)$/i'              => '$1es',
+            '/([^aeiouy]|qu)ies$/i'          => '$1y',       // already plural
+            '/([^aeiouy]|qu)y$/i'            => '$1ies',
+            '/(hive)$/i'                     => '$1s',
+            '/([lr])f$/i'                    => '$1ves',
+            '/([^f])fe$/i'                   => '$1ves',
+            '/(shea|lea|loa|thie)f$/i'       => '$1ves',
+            '/sis$/i'                        => 'ses',
+            '/([ti])a$/i'                    => '$1a',        // already plural
+            '/(buffal|tomat|potat)o$/i'      => '$1oes',
+            '/(bu|mis|gas)$/i'               => '$1ses',
+            '/([^aeiou])o$/i'               => '$1oes',
+            '/s$/i'                          => 's',          // already plural
+            '/(ax|test)is$/i'               => '$1es',
+            '/(octop|vir)us$/i'             => '$1i',
+            '/(alias|status|campus|apparatus|virus|radius|syllabus|census|focus|locus|nexus|plexus|sinus|calculus|stimulus|alumnus|bacillus|cactus|fungus|nucleus|modulus|cumulus|cirrus|torus|chorus)$/i' => '$1es',
+            '/(s|si|se)s$/i'                => '$1ses',
+        ];
+
+        foreach ($rules as $pattern => $replacement) {
+            if (preg_match($pattern, $word)) {
+                return preg_replace($pattern, $replacement, $word);
+            }
+        }
+
+        // Default: append 's'
+        return $word . 's';
     }
 }

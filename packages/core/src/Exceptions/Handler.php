@@ -12,12 +12,10 @@ use Kyqo\Http\Response;
  * In debug mode, displays rich error information.
  * In production mode, renders safe user-facing error pages.
  *
- * FIX minor (defense-in-depth): renderProduction() now escapes both
- * $status and $message through htmlspecialchars(). The values currently
- * come from a static internal array so there is no active XSS vector,
- * but hardening against future dynamic entries costs nothing and prevents
- * the method from becoming a gadget if the $messages map is ever extended
- * with caller-supplied content.
+ * FIX AUDIT-3: report() now resolves the PSR-3-compatible Logger from the
+ *              container (alias 'log') instead of calling error_log() directly.
+ *              Falls back to error_log() if the container is not bootstrapped
+ *              or the logger cannot be resolved (e.g. in early boot failures).
  */
 class Handler
 {
@@ -32,12 +30,40 @@ class Handler
 
     /**
      * Report the exception (log it).
+     *
+     * FIX AUDIT-3: delegates to the Logger instance bound as 'log' in the
+     * Application container, falling back to error_log() when unavailable.
      */
     public function report(Throwable $e): void
     {
-        if ($this->shouldReport($e)) {
-            error_log($e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+        if (!$this->shouldReport($e)) {
+            return;
         }
+
+        $message = sprintf(
+            '%s: %s in %s:%d',
+            get_class($e),
+            $e->getMessage(),
+            $e->getFile(),
+            $e->getLine()
+        );
+
+        // Try the PSR-3-compatible Logger from the container first.
+        try {
+            $logger = \Kyqo\Core\Application::getInstance()->make('log');
+            $logger->error($message, [
+                'exception' => get_class($e),
+                'file'      => $e->getFile(),
+                'line'      => $e->getLine(),
+                'trace'     => $e->getTraceAsString(),
+            ]);
+            return;
+        } catch (\Throwable) {
+            // Container not yet bootstrapped or logger misconfigured — fall through.
+        }
+
+        // Fallback for early-boot failures.
+        error_log($message);
     }
 
     /**
@@ -75,10 +101,6 @@ class Handler
         );
     }
 
-    /**
-     * FIX minor: escape $status and $message so this method cannot become
-     * an XSS gadget if the $messages map is extended with dynamic content.
-     */
     protected function renderProduction(int $status): string
     {
         $messages = [

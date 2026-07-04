@@ -22,12 +22,17 @@ use Kyqo\Queue\QueueInterface;
  *   prefix     (default: 'kyqo:queue:')
  *   queue      (default: 'default')
  *   timeout    (default: 2.0)
+ *
+ * FIX AUDIT-4: Connection is lazy — \Redis is created on first use,
+ *              not in __construct(), so a down Redis server does not
+ *              crash the application at boot time.
  */
 class RedisQueue implements QueueInterface
 {
-    protected \Redis $redis;
-    protected string $prefix;
-    protected string $defaultQueue;
+    protected ?\Redis $redis = null;
+    protected array   $config;
+    protected string  $prefix;
+    protected string  $defaultQueue;
 
     public function __construct(array $config)
     {
@@ -35,27 +40,15 @@ class RedisQueue implements QueueInterface
             throw new \RuntimeException('ext-redis is required to use the Redis queue driver.');
         }
 
+        $this->config       = $config;
         $this->prefix       = $config['prefix'] ?? 'kyqo:queue:';
         $this->defaultQueue = $config['queue']  ?? 'default';
-
-        $this->redis = new \Redis();
-        $this->redis->connect(
-            $config['host']    ?? '127.0.0.1',
-            (int)  ($config['port']    ?? 6379),
-            (float)($config['timeout'] ?? 2.0)
-        );
-
-        if (!empty($config['password'])) {
-            $this->redis->auth($config['password']);
-        }
-
-        $this->redis->select((int) ($config['database'] ?? 0));
     }
 
     public function push(object $job, ?string $queue = null): mixed
     {
         $key = $this->listKey($queue);
-        return $this->redis->rPush($key, $this->serialize($job, time()));
+        return $this->connection()->rPush($key, $this->serialize($job, time()));
     }
 
     public function later(\DateTimeInterface|int $delay, object $job, ?string $queue = null): mixed
@@ -65,7 +58,7 @@ class RedisQueue implements QueueInterface
             : time() + (int) $delay;
 
         $key = $this->delayedKey($queue);
-        return $this->redis->zAdd($key, $availableAt, $this->serialize($job, $availableAt));
+        return $this->connection()->zAdd($key, $availableAt, $this->serialize($job, $availableAt));
     }
 
     /**
@@ -75,7 +68,7 @@ class RedisQueue implements QueueInterface
     {
         $this->migrateDelayed($queue);
 
-        $raw = $this->redis->lPop($this->listKey($queue));
+        $raw = $this->connection()->lPop($this->listKey($queue));
         if ($raw === false || $raw === null) {
             return null;
         }
@@ -91,7 +84,7 @@ class RedisQueue implements QueueInterface
     public function size(?string $queue = null): int
     {
         $this->migrateDelayed($queue);
-        return (int) $this->redis->lLen($this->listKey($queue));
+        return (int) $this->connection()->lLen($this->listKey($queue));
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -102,14 +95,13 @@ class RedisQueue implements QueueInterface
         $delayed = $this->delayedKey($queue);
         $list    = $this->listKey($queue);
 
-        // Fetch all members with score <= now
-        $jobs = $this->redis->zRangeByScore($delayed, '-inf', (string) $now);
+        $jobs = $this->connection()->zRangeByScore($delayed, '-inf', (string) $now);
         if (empty($jobs)) return;
 
         foreach ($jobs as $job) {
-            $this->redis->rPush($list, $job);
+            $this->connection()->rPush($list, $job);
         }
-        $this->redis->zRemRangeByScore($delayed, '-inf', (string) $now);
+        $this->connection()->zRemRangeByScore($delayed, '-inf', (string) $now);
     }
 
     protected function serialize(object $job, int $availableAt): string
@@ -129,5 +121,30 @@ class RedisQueue implements QueueInterface
     protected function delayedKey(?string $queue): string
     {
         return $this->prefix . ($queue ?? $this->defaultQueue) . ':delayed';
+    }
+
+    /**
+     * FIX AUDIT-4: Lazy connection factory.
+     */
+    protected function connection(): \Redis
+    {
+        if ($this->redis !== null) {
+            return $this->redis;
+        }
+
+        $this->redis = new \Redis();
+        $this->redis->connect(
+            $this->config['host']    ?? '127.0.0.1',
+            (int)   ($this->config['port']    ?? 6379),
+            (float) ($this->config['timeout'] ?? 2.0)
+        );
+
+        if (!empty($this->config['password'])) {
+            $this->redis->auth($this->config['password']);
+        }
+
+        $this->redis->select((int) ($this->config['database'] ?? 0));
+
+        return $this->redis;
     }
 }

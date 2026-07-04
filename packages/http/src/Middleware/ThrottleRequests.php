@@ -12,6 +12,15 @@ use Kyqo\Http\Response;
  * SEC-V4-2 FIX: umask(0077) is applied BEFORE fopen() so the file is
  *               created with 0600 from the start — no race window.
  * MINOR FIX (maintained): Probabilistic GC sweep of expired entries.
+ *
+ * FIX AUDIT-6: Rate-limit key now prefers the authenticated user ID over
+ *              the raw IP address when the request is authenticated.
+ *              This prevents a single user from bypassing the limit by
+ *              rotating IPs, and avoids penalising all users behind a NAT.
+ *
+ *              Resolution order:
+ *                1. auth()->id()  — if Auth is available and user is logged in
+ *                2. $request->ip() — fallback for unauthenticated requests
  */
 class ThrottleRequests
 {
@@ -27,7 +36,6 @@ class ThrottleRequests
         $this->storePath    = sys_get_temp_dir() . '/kyqo_throttle';
 
         if (!is_dir($this->storePath)) {
-            // SEC: restrictive dir permissions
             mkdir($this->storePath, 0700, true);
         }
     }
@@ -42,8 +50,6 @@ class ThrottleRequests
         $file = $this->storePath . '/' . $key . '.json';
         $now  = time();
 
-        // SEC-V4-2 FIX: set restrictive umask BEFORE fopen so the file
-        // is created 0600 from the start, not 0644 with a race window.
         $oldUmask = umask(0077);
         $fh = fopen($file, 'c+');
         umask($oldUmask);
@@ -98,11 +104,32 @@ class ThrottleRequests
         return $response;
     }
 
+    /**
+     * FIX AUDIT-6: Prefer authenticated user ID over IP.
+     *
+     * Uses the 'auth' alias from the Application container.
+     * If Auth is unavailable or the user is a guest, falls back to IP.
+     */
     protected function resolveKey(Request $request): string
     {
-        $ip   = $request->ip() ?? '0.0.0.0';
+        $identity = null;
+
+        try {
+            $auth     = \Kyqo\Core\Application::getInstance()->make('auth');
+            $userId   = $auth->id();
+            if ($userId !== null) {
+                $identity = 'user:' . $userId;
+            }
+        } catch (\Throwable) {
+            // Auth not available — use IP.
+        }
+
+        if ($identity === null) {
+            $identity = 'ip:' . ($request->ip() ?? '0.0.0.0');
+        }
+
         $path = hash('sha256', $request->path());
-        return hash('sha256', $ip . '|' . $path);
+        return hash('sha256', $identity . '|' . $path);
     }
 
     protected function pruneExpired(): void

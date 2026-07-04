@@ -23,6 +23,11 @@ namespace Kyqo\View;
  *   {{ $expr }}  — escaped output
  *   {!! $expr !!} — raw output
  *   {{-- comment --}} — removed
+ *
+ * FIX AUDIT-2: compileDirectives() now detects preg_replace() failures
+ *              (PREG_BACKTRACK_LIMIT_ERROR, malformed pattern in @-directives,
+ *              etc.) and throws a \RuntimeException with the offending pattern
+ *              and PREG error name instead of silently returning null.
  */
 class Compiler
 {
@@ -60,13 +65,18 @@ class Compiler
     public function compileString(string $content): string
     {
         // Remove comments
-        $content = preg_replace('/\{\{--.*?--\}\}/s', '', $content);
+        $content = $this->safeReplace('/\{\{--.*?--\}\}/s', '', $content, '{{-- --}}');
 
         // Raw output {!! ... !!}
-        $content = preg_replace('/\{!!\s*(.+?)\s*!!\}/s', '<?php echo $1; ?>', $content);
+        $content = $this->safeReplace('/\{!!\s*(.+?)\s*!!\}/s', '<?php echo $1; ?>', $content, '{!! !!}');
 
         // Escaped output {{ ... }}
-        $content = preg_replace('/\{\{\s*(.+?)\s*\}\}/s', '<?php echo htmlspecialchars($1, ENT_QUOTES|ENT_SUBSTITUTE, \'UTF-8\'); ?>', $content);
+        $content = $this->safeReplace(
+            '/\{\{\s*(.+?)\s*\}\}/s',
+            '<?php echo htmlspecialchars($1, ENT_QUOTES|ENT_SUBSTITUTE, \'UTF-8\'); ?>',
+            $content,
+            '{{ }}'
+        );
 
         // @-directives
         $content = $this->compileDirectives($content);
@@ -139,9 +149,34 @@ class Compiler
         ];
 
         foreach ($patterns as $pattern => $replacement) {
-            $content = preg_replace($pattern, $replacement, $content);
+            $content = $this->safeReplace($pattern, $replacement, $content, $pattern);
         }
 
         return $content;
+    }
+
+    /**
+     * FIX AUDIT-2: Wrapper around preg_replace() that throws on failure.
+     *
+     * preg_replace() returns null on error (PREG_BACKTRACK_LIMIT_ERROR, etc.)
+     * and PHP only sets preg_last_error() — the caller would silently receive
+     * null and likely produce an empty/corrupt compiled file.
+     *
+     * @throws \RuntimeException with pattern name and PREG error constant name.
+     */
+    protected function safeReplace(string $pattern, string $replacement, string $subject, string $label): string
+    {
+        $result = preg_replace($pattern, $replacement, $subject);
+
+        if ($result === null) {
+            $errorCode = preg_last_error();
+            $errorName = array_flip(get_defined_constants(true)['pcre'] ?? [])[$errorCode] ?? "PREG_ERROR_{$errorCode}";
+            throw new \RuntimeException(
+                "Kyqo\\View\\Compiler: preg_replace failed on pattern [{$label}]. "
+                . "PCRE error: {$errorName} (code {$errorCode})."
+            );
+        }
+
+        return $result;
     }
 }

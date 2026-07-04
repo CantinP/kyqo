@@ -14,11 +14,18 @@ use Kyqo\Cache\StoreInterface;
  *   database (default: 0)
  *   prefix   (default: 'kyqo:')
  *   timeout  (default: 2.0)
+ *
+ * FIX AUDIT-4: Connection is lazy — the \Redis object is created on the first
+ *              actual cache operation, not in __construct().
+ *              This means a misconfigured or unavailable Redis server will NOT
+ *              crash the application at boot time; it will only throw when
+ *              the cache is actually used, producing a clear error in context.
  */
 class RedisStore implements StoreInterface
 {
-    protected \Redis $redis;
-    protected string $prefix;
+    protected ?\Redis $redis = null;
+    protected string  $prefix;
+    protected array   $config;
 
     public function __construct(array $config)
     {
@@ -26,24 +33,13 @@ class RedisStore implements StoreInterface
             throw new \RuntimeException('ext-redis is required to use the Redis cache driver.');
         }
 
+        $this->config = $config;
         $this->prefix = $config['prefix'] ?? 'kyqo:';
-        $this->redis  = new \Redis();
-        $this->redis->connect(
-            $config['host']    ?? '127.0.0.1',
-            (int)  ($config['port']    ?? 6379),
-            (float)($config['timeout'] ?? 2.0)
-        );
-
-        if (!empty($config['password'])) {
-            $this->redis->auth($config['password']);
-        }
-
-        $this->redis->select((int) ($config['database'] ?? 0));
     }
 
     public function get(string $key, mixed $default = null): mixed
     {
-        $raw = $this->redis->get($this->prefix . $key);
+        $raw = $this->connection()->get($this->prefix . $key);
         if ($raw === false) return $default;
         return unserialize($raw, ['allowed_classes' => true]);
     }
@@ -52,28 +48,53 @@ class RedisStore implements StoreInterface
     {
         $serialized = serialize($value);
         if ($ttl > 0) {
-            return (bool) $this->redis->setex($this->prefix . $key, $ttl, $serialized);
+            return (bool) $this->connection()->setex($this->prefix . $key, $ttl, $serialized);
         }
-        return (bool) $this->redis->set($this->prefix . $key, $serialized);
+        return (bool) $this->connection()->set($this->prefix . $key, $serialized);
     }
 
     public function forget(string $key): bool
     {
-        return $this->redis->del($this->prefix . $key) >= 0;
+        return $this->connection()->del($this->prefix . $key) >= 0;
     }
 
     public function has(string $key): bool
     {
-        return (bool) $this->redis->exists($this->prefix . $key);
+        return (bool) $this->connection()->exists($this->prefix . $key);
     }
 
     public function flush(): bool
     {
-        return (bool) $this->redis->flushDB();
+        return (bool) $this->connection()->flushDB();
     }
 
     public function getRedis(): \Redis
     {
+        return $this->connection();
+    }
+
+    /**
+     * FIX AUDIT-4: Lazy connection factory.
+     */
+    protected function connection(): \Redis
+    {
+        if ($this->redis !== null) {
+            return $this->redis;
+        }
+
+        $this->redis = new \Redis();
+        $this->redis->connect(
+            $this->config['host']    ?? '127.0.0.1',
+            (int)   ($this->config['port']    ?? 6379),
+            (float) ($this->config['timeout'] ?? 2.0)
+        );
+
+        if (!empty($this->config['password'])) {
+            $this->redis->auth($this->config['password']);
+        }
+
+        $this->redis->select((int) ($this->config['database'] ?? 0));
+
         return $this->redis;
     }
 }

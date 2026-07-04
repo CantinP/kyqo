@@ -20,6 +20,9 @@ namespace Kyqo\Http\Validation;
  *   exists:{table},{column} (requires DB resolver callback),
  *   unique:{table},{column} (requires DB resolver callback)
  *
+ * FIX AUDIT-1: Unknown rules now throw \InvalidArgumentException
+ *              instead of silently passing.
+ *
  * Usage:
  *   $v = new Validator($data, ['email' => 'required|email', 'age' => 'required|integer|min:18']);
  *   if ($v->fails()) { $errors = $v->errors(); }
@@ -33,11 +36,27 @@ class Validator
     protected array $messages;
     protected ?\Closure $dbResolver = null;
 
+    /**
+     * Rules that the validator recognises natively.
+     * Any other rule name will throw an \InvalidArgumentException.
+     */
+    private const KNOWN_RULES = [
+        'required', 'nullable', 'string', 'numeric', 'integer', 'boolean', 'array',
+        'email', 'url', 'alpha', 'alpha_num', 'alpha_dash',
+        'min', 'max', 'between', 'size',
+        'in', 'not_in', 'regex',
+        'confirmed', 'same', 'different',
+        'date', 'date_format',
+        'exists', 'unique',
+    ];
+
     public function __construct(array $data, array $rules, array $messages = [])
     {
         $this->data     = $data;
         $this->rules    = $rules;
         $this->messages = $messages;
+
+        $this->assertKnownRules();
     }
 
     public function setDbResolver(\Closure $resolver): static
@@ -132,7 +151,8 @@ class Validator
             'date_format'  => $this->validateDateFormat($value, $param),
             'exists'       => $this->validateExists($field, $value, $param),
             'unique'       => $this->validateUnique($field, $value, $param),
-            default        => true, // unknown rules pass silently
+            // assertKnownRules() already rejected anything else at construction time.
+            default        => throw new \LogicException("Rule [{$ruleName}] passed assertKnownRules() but has no handler."),
         };
 
         if (!$passed) {
@@ -193,6 +213,30 @@ class Validator
     }
 
     // -------------------------------------------------------------------------
+
+    /**
+     * FIX AUDIT-1: Reject unknown rule names at construction time.
+     *
+     * Rules with parameters (e.g. "min:5", "regex:/foo/") are split on ":"
+     * and only the rule name is checked.
+     *
+     * @throws \InvalidArgumentException
+     */
+    protected function assertKnownRules(): void
+    {
+        foreach ($this->rules as $field => $ruleString) {
+            $rules = is_array($ruleString) ? $ruleString : explode('|', $ruleString);
+            foreach ($rules as $raw) {
+                [$name] = $this->parseRule(trim($raw));
+                if (!in_array($name, self::KNOWN_RULES, true)) {
+                    throw new \InvalidArgumentException(
+                        "Validator: unknown rule [{$name}] on field [{$field}]. "
+                        . 'Check for typos. Known rules: ' . implode(', ', self::KNOWN_RULES) . '.'
+                    );
+                }
+            }
+        }
+    }
 
     protected function parseRule(string $rule): array
     {
