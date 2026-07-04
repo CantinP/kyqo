@@ -6,9 +6,7 @@ if (!function_exists('app')) {
     function app(string $abstract = null, array $parameters = []): mixed
     {
         $instance = Application::getInstance();
-        if (is_null($abstract)) {
-            return $instance;
-        }
+        if ($abstract === null) return $instance;
         return $instance->make($abstract, $parameters);
     }
 }
@@ -16,11 +14,9 @@ if (!function_exists('app')) {
 if (!function_exists('env')) {
     function env(string $key, mixed $default = null): mixed
     {
-        $value = $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key);
-        if ($value === false) {
-            return $default;
-        }
-        return match (strtolower((string) $value)) {
+        $value = $_ENV[$key] ?? getenv($key);
+        if ($value === false || $value === null) return $default;
+        return match (strtolower($value)) {
             'true',  '(true)'  => true,
             'false', '(false)' => false,
             'null',  '(null)'  => null,
@@ -33,118 +29,101 @@ if (!function_exists('env')) {
 if (!function_exists('config')) {
     function config(string $key = null, mixed $default = null): mixed
     {
-        if (is_null($key)) {
-            return app('config');
-        }
-        return app('config')->get($key, $default);
+        $cfg = app('config');
+        if ($key === null) return $cfg;
+        return $cfg->get($key, $default);
     }
 }
 
-if (!function_exists('base_path')) {
-    function base_path(string $path = ''): string { return app()->basePath($path); }
-}
-
-if (!function_exists('app_path')) {
-    function app_path(string $path = ''): string { return app()->appPath($path); }
-}
-
-if (!function_exists('config_path')) {
-    function config_path(string $path = ''): string { return app()->configPath($path); }
-}
-
-if (!function_exists('database_path')) {
-    function database_path(string $path = ''): string { return app()->databasePath($path); }
-}
-
-if (!function_exists('resource_path')) {
-    function resource_path(string $path = ''): string { return app()->resourcePath($path); }
-}
-
-if (!function_exists('storage_path')) {
-    function storage_path(string $path = ''): string { return app()->storagePath($path); }
-}
-
-if (!function_exists('public_path')) {
-    function public_path(string $path = ''): string { return app()->publicPath($path); }
-}
-
 if (!function_exists('view')) {
-    function view(string $template, array $data = []): mixed
+    function view(string $template, array $data = []): string
     {
         return app('view')->make($template, $data);
     }
 }
 
-if (!function_exists('redirect')) {
-    function redirect(string $url = null, int $status = 302): mixed
+if (!function_exists('auth')) {
+    function auth(?string $guard = null): mixed
     {
-        if (is_null($url)) {
-            return app('url');
-        }
+        $manager = app('auth');
+        return $guard ? $manager->guard($guard) : $manager;
+    }
+}
+
+if (!function_exists('redirect')) {
+    function redirect(string $url, int $status = 302): \Kyqo\Http\Response
+    {
         return \Kyqo\Http\Response::redirect($url, $status);
     }
 }
 
 if (!function_exists('response')) {
-    function response(mixed $content = '', int $status = 200, array $headers = []): mixed
+    function response(string $content = '', int $status = 200, array $headers = []): \Kyqo\Http\Response
     {
-        if (func_num_args() === 0) {
-            return app('response');
-        }
-        return \Kyqo\Http\Response::make((string) $content, $status, $headers);
+        return new \Kyqo\Http\Response($content, $status, $headers);
     }
 }
 
 if (!function_exists('request')) {
-    function request(string $key = null, mixed $default = null): mixed
+    function request(?string $key = null, mixed $default = null): mixed
     {
-        if (is_null($key)) {
-            return app('request');
-        }
-        return app('request')->get($key, $default);
+        $req = app('request');
+        if ($key === null) return $req;
+        return $req->input($key, $default);
     }
 }
 
 if (!function_exists('session')) {
-    function session(string $key = null, mixed $default = null): mixed
+    function session(?string $key = null, mixed $default = null): mixed
     {
-        if (is_null($key)) {
-            return app('session');
-        }
-        return app('session')->get($key, $default);
+        $store = app('session');
+        if ($key === null) return $store;
+        return $store->get($key, $default);
     }
 }
 
-if (!function_exists('auth')) {
-    function auth(string $guard = null): mixed
+if (!function_exists('cache')) {
+    function cache(?string $key = null, mixed $default = null): mixed
     {
-        return app('auth')->guard($guard);
+        $mgr = app('cache');
+        if ($key === null) return $mgr;
+        return $mgr->get($key, $default);
     }
 }
 
-if (!function_exists('route')) {
-    function route(string $name, array $parameters = [], bool $absolute = true): string
+if (!function_exists('storage_path')) {
+    function storage_path(string $path = ''): string
     {
-        return app('url')->route($name, $parameters, $absolute);
+        return app()->storagePath($path);
     }
 }
 
-if (!function_exists('url')) {
-    function url(string $path = '', array $query = []): string
+if (!function_exists('resource_path')) {
+    function resource_path(string $path = ''): string
     {
-        return app('url')->to($path, $query);
+        return app()->resourcePath($path);
     }
 }
 
-if (!function_exists('abort')) {
-    function abort(int $code, string $message = '', array $headers = []): never
+if (!function_exists('database_path')) {
+    function database_path(string $path = ''): string
     {
-        throw new \RuntimeException($message ?: 'Abort', $code);
+        return app()->databasePath($path);
     }
 }
 
-if (!function_exists('now')) {
-    function now(): \DateTimeImmutable { return new \DateTimeImmutable(); }
+if (!function_exists('base_path')) {
+    function base_path(string $path = ''): string
+    {
+        return app()->basePath($path);
+    }
+}
+
+if (!function_exists('public_path')) {
+    function public_path(string $path = ''): string
+    {
+        return app()->publicPath($path);
+    }
 }
 
 if (!function_exists('collect')) {
@@ -154,35 +133,163 @@ if (!function_exists('collect')) {
     }
 }
 
-if (!function_exists('dd')) {
-    function dd(mixed ...$vars): never
+if (!function_exists('bcrypt')) {
+    function bcrypt(string $value, array $options = []): string
     {
-        $env = strtolower((string) (app()->environment() ?? 'production'));
-        if (!in_array($env, ['local', 'development', 'testing'], true)) {
-            throw new \RuntimeException(
-                'dd() is disabled in production. Set APP_ENV=local to use debug helpers.'
-            );
-        }
-        foreach ($vars as $var) {
-            echo '<pre style="background:#1e1e2e;color:#cdd6f4;padding:1rem;border-radius:8px;margin:1rem 0;">';
-            var_dump($var);
-            echo '</pre>';
-        }
-        exit(1);
+        return app('hash')->make($value, $options);
     }
 }
 
-if (!function_exists('dump')) {
-    function dump(mixed ...$vars): void
+if (!function_exists('now')) {
+    function now(): \DateTimeImmutable
     {
-        $env = strtolower((string) (app()->environment() ?? 'production'));
-        if (!in_array($env, ['local', 'development', 'testing'], true)) {
-            return;
+        return new \DateTimeImmutable();
+    }
+}
+
+if (!function_exists('abort')) {
+    function abort(int $code, string $message = ''): never
+    {
+        throw new \Kyqo\Http\Exceptions\HttpException($code, $message);
+    }
+}
+
+if (!function_exists('logger')) {
+    function logger(string $message = null, array $context = []): mixed
+    {
+        $log = app('log');
+        if ($message === null) return $log;
+        $log->debug($message, $context);
+        return null;
+    }
+}
+
+if (!function_exists('url')) {
+    function url(string $path = '', array $parameters = []): string
+    {
+        return app('url')->to($path, $parameters);
+    }
+}
+
+if (!function_exists('route')) {
+    function route(string $name, array $parameters = []): string
+    {
+        return app('url')->route($name, $parameters);
+    }
+}
+
+if (!function_exists('old')) {
+    function old(string $key, mixed $default = null): mixed
+    {
+        return app('session')->get('_old_input.' . $key, $default);
+    }
+}
+
+if (!function_exists('csrf_token')) {
+    function csrf_token(): string
+    {
+        $session = app('session');
+        if (!$session->has('_token')) {
+            $session->put('_token', bin2hex(random_bytes(32)));
         }
-        foreach ($vars as $var) {
-            echo '<pre style="background:#1e1e2e;color:#cdd6f4;padding:1rem;border-radius:8px;margin:1rem 0;">';
-            var_dump($var);
-            echo '</pre>';
+        return $session->get('_token');
+    }
+}
+
+if (!function_exists('csrf_field')) {
+    function csrf_field(): string
+    {
+        return '<input type="hidden" name="_token" value="' . htmlspecialchars(csrf_token(), ENT_QUOTES, 'UTF-8') . '">';
+    }
+}
+
+if (!function_exists('method_field')) {
+    function method_field(string $method): string
+    {
+        return '<input type="hidden" name="_method" value="' . htmlspecialchars(strtoupper($method), ENT_QUOTES, 'UTF-8') . '">';
+    }
+}
+
+if (!function_exists('trans')) {
+    function trans(string $key, array $replace = [], ?string $locale = null): string
+    {
+        // Placeholder — returns the key until an i18n package is added.
+        return $key;
+    }
+}
+
+if (!function_exists('__')) {
+    function __(string $key, array $replace = [], ?string $locale = null): string
+    {
+        return trans($key, $replace, $locale);
+    }
+}
+
+if (!function_exists('value')) {
+    function value(mixed $value, ...$args): mixed
+    {
+        return $value instanceof Closure ? $value(...$args) : $value;
+    }
+}
+
+if (!function_exists('tap')) {
+    function tap(mixed $value, ?callable $callback = null): mixed
+    {
+        if ($callback === null) {
+            return $value;
+        }
+        $callback($value);
+        return $value;
+    }
+}
+
+if (!function_exists('with')) {
+    function with(mixed $value, ?callable $callback = null): mixed
+    {
+        return $callback === null ? $value : $callback($value);
+    }
+}
+
+if (!function_exists('blank')) {
+    function blank(mixed $value): bool
+    {
+        if (is_null($value)) return true;
+        if (is_string($value)) return trim($value) === '';
+        if (is_array($value)) return empty($value);
+        return false;
+    }
+}
+
+if (!function_exists('filled')) {
+    function filled(mixed $value): bool
+    {
+        return !blank($value);
+    }
+}
+
+if (!function_exists('throw_if')) {
+    function throw_if(bool $condition, \Throwable|string $exception, string ...$args): void
+    {
+        if ($condition) {
+            throw is_string($exception) ? new \RuntimeException($exception) : $exception;
+        }
+    }
+}
+
+if (!function_exists('throw_unless')) {
+    function throw_unless(bool $condition, \Throwable|string $exception, string ...$args): void
+    {
+        throw_if(!$condition, $exception, ...$args);
+    }
+}
+
+if (!function_exists('rescue')) {
+    function rescue(callable $callback, mixed $rescue = null): mixed
+    {
+        try {
+            return $callback();
+        } catch (\Throwable $e) {
+            return value($rescue, $e);
         }
     }
 }

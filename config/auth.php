@@ -3,7 +3,7 @@
 return [
 
     'defaults' => [
-        'guard'     => 'web',
+        'guard'    => 'web',
         'passwords' => 'users',
     ],
 
@@ -15,14 +15,13 @@ return [
         'api' => [
             'driver'   => 'token',
             'provider' => 'users',
-            'hash'     => false,
         ],
     ],
 
     'providers' => [
         'users' => [
-            'driver' => 'eloquent',
-            'model'  => App\Models\User::class,
+            'driver' => 'database',
+            'table'  => 'users',
         ],
     ],
 
@@ -36,4 +35,5 @@ return [
     ],
 
     'password_timeout' => 10800,
+
 ];

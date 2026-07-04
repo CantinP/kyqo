@@ -5,72 +5,81 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Welcome to Kyqo</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #0f0f0f;
-            color: #f8f8f2;
-            font-family: 'Segoe UI', system-ui, sans-serif;
+            color: #e5e7eb;
+            min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            min-height: 100vh;
         }
-        .hero {
+        .container {
             text-align: center;
-            padding: 4rem 2rem;
-        }
-        .logo {
-            font-size: 5rem;
-            font-weight: 900;
-            background: linear-gradient(135deg, #bd93f9, #ff79c6, #50fa7b);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            letter-spacing: -0.05em;
-            margin-bottom: 1.5rem;
-        }
-        .tagline {
-            font-size: 1.25rem;
-            color: #6272a4;
-            margin-bottom: 3rem;
+            padding: 2rem;
             max-width: 600px;
         }
-        .badges {
+        .logo {
+            font-size: 4rem;
+            font-weight: 800;
+            letter-spacing: -2px;
+            background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+        }
+        .tagline {
+            font-size: 1.1rem;
+            color: #9ca3af;
+            margin-bottom: 2.5rem;
+        }
+        .version {
+            display: inline-block;
+            background: #1f1f1f;
+            border: 1px solid #2d2d2d;
+            border-radius: 9999px;
+            padding: 0.3rem 1rem;
+            font-size: 0.8rem;
+            color: #6b7280;
+            margin-bottom: 2rem;
+        }
+        .links {
             display: flex;
-            gap: 0.75rem;
+            gap: 1rem;
             justify-content: center;
             flex-wrap: wrap;
-            margin-bottom: 3rem;
         }
-        .badge {
-            padding: 0.5rem 1rem;
-            border-radius: 9999px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            border: 1px solid;
+        .link {
+            padding: 0.6rem 1.4rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: opacity 0.15s;
         }
-        .badge-php   { color: #bd93f9; border-color: #bd93f9; }
-        .badge-ts    { color: #8be9fd; border-color: #8be9fd; }
-        .badge-ui    { color: #ff79c6; border-color: #ff79c6; }
-        .badge-db    { color: #50fa7b; border-color: #50fa7b; }
-        .badge-queue { color: #ffb86c; border-color: #ffb86c; }
-        .version {
-            font-size: 0.8rem;
-            color: #44475a;
+        .link:hover { opacity: 0.8; }
+        .link-primary {
+            background: linear-gradient(135deg, #6366f1, #a855f7);
+            color: #fff;
+        }
+        .link-secondary {
+            background: #1f1f1f;
+            border: 1px solid #2d2d2d;
+            color: #d1d5db;
         }
     </style>
 </head>
 <body>
-    <div class="hero">
+    <div class="container">
         <div class="logo">Kyqo</div>
-        <p class="tagline">The only framework you'll ever need — full-stack, powerful, cross-language.</p>
-        <div class="badges">
-            <span class="badge badge-php">PHP 8.3+</span>
-            <span class="badge badge-ts">TypeScript</span>
-            <span class="badge badge-ui">UI Components</span>
-            <span class="badge badge-db">ORM + Migrations</span>
-            <span class="badge badge-queue">Queues + Events</span>
+        <p class="tagline">The only framework you'll ever need.</p>
+        <span class="version">v<?= $engine->e(\Kyqo\Core\Application::VERSION) ?></span>
+        <div class="links">
+            <a class="link link-primary" href="https://github.com/CantinP/kyqo">GitHub</a>
+            <a class="link link-secondary" href="https://github.com/CantinP/kyqo/blob/main/README.md">Documentation</a>
         </div>
-        <p class="version">Kyqo v0.1.0</p>
     </div>
 </body>
 </html>
