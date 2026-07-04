@@ -1,32 +1,40 @@
 #!/usr/bin/env php
 <?php
 
-define('KYQO_START', microtime(true));
-define('KYQO_ROOT', __DIR__);
+declare(strict_types=1);
 
-/*
-|--------------------------------------------------------------------------
-| Kyqo CLI Entry Point
-|--------------------------------------------------------------------------
-|
-| This script is the entry point for the Kyqo CLI (like Artisan in Laravel).
-| It bootstraps the framework and runs the requested console command.
-|
-*/
+/**
+ * Kyqo CLI entry point.
+ *
+ * Usage:
+ *   php kyqo <command> [arguments] [--options]
+ *
+ * Examples:
+ *   php kyqo migrate
+ *   php kyqo migrate:rollback --step=2
+ *   php kyqo queue:work --queue=default
+ *   php kyqo make:controller UserController
+ *   php kyqo make:model Post --migration
+ *   php kyqo cache:clear
+ *   php kyqo key:generate
+ *   php kyqo serve --port=8000
+ */
 
-if (file_exists(__DIR__.'/vendor/autoload.php')) {
-    require __DIR__.'/vendor/autoload.php';
+if (PHP_SAPI !== 'cli') {
+    fwrite(STDERR, "This script must be run from the command line.\n");
+    exit(1);
 }
 
-$app = require_once __DIR__.'/bootstrap/app.php';
+// ── Autoloader & Bootstrap ──────────────────────────────────────────────────
+require __DIR__ . '/vendor/autoload.php';
 
-$kernel = $app->make(Kyqo\Console\Kernel::class);
+$app = require __DIR__ . '/bootstrap/app.php';
 
+// ── Run console kernel ──────────────────────────────────────────────────────
+$kernel = $app->make(\Kyqo\Console\Kernel::class);
 $status = $kernel->handle(
-    $input = new Symfony\Component\Console\Input\ArgvInput,
-    new Symfony\Component\Console\Output\ConsoleOutput
+    new \Kyqo\Console\Input\ArgvInput($argv),
+    new \Kyqo\Console\Output\ConsoleOutput()
 );
 
-$kernel->terminate($input, $status);
-
-exit($status);
+exit($status ?? 0);

@@ -1,30 +1,35 @@
 <?php
 
-define('KYQO_START', microtime(true));
-define('KYQO_ROOT', dirname(__DIR__));
+/**
+ * Kyqo – Public entry point.
+ *
+ * All HTTP traffic is routed here by the web server (Apache / Nginx).
+ * The document root should point to this directory.
+ */
 
-/*
-|--------------------------------------------------------------------------
-| Kyqo HTTP Entry Point
-|--------------------------------------------------------------------------
-|
-| All HTTP requests come through this single file, which bootstraps the
-| framework, creates the HTTP kernel, and handles the incoming request.
-|
-*/
+declare(strict_types=1);
 
-if (file_exists($autoload = KYQO_ROOT.'/vendor/autoload.php')) {
-    require $autoload;
+// ── Maintenance mode ────────────────────────────────────────────────────────
+if (file_exists(__DIR__ . '/../storage/framework/down')) {
+    http_response_code(503);
+    header('Retry-After: 60');
+    if (file_exists(__DIR__ . '/../resources/views/errors/503.php')) {
+        include __DIR__ . '/../resources/views/errors/503.php';
+    } else {
+        echo '<h1>503 – Be right back.</h1>';
+    }
+    exit;
 }
 
-$app = require_once KYQO_ROOT.'/bootstrap/app.php';
+// ── Autoloader ──────────────────────────────────────────────────────────────
+require __DIR__ . '/../vendor/autoload.php';
 
-$kernel = $app->make(Kyqo\Http\Kernel::class);
+// ── Bootstrap ───────────────────────────────────────────────────────────────
+$app = require_once __DIR__ . '/../bootstrap/app.php';
 
-$response = $kernel->handle(
-    $request = Kyqo\Http\Request::capture()
-);
+// ── HTTP Kernel ─────────────────────────────────────────────────────────────
+$kernel = $app->make(\Kyqo\Http\Kernel::class);
 
+$request  = \Kyqo\Http\Request::capture();
+$response = $kernel->handle($request);
 $response->send();
-
-$kernel->terminate($request, $response);

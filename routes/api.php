@@ -1,18 +1,7 @@
 <?php
 
-use Kyqo\Http\Support\Facades\Route;
+use Kyqo\Http\Router\Router;
 
-/*
-|--------------------------------------------------------------------------
-| API Routes
-|--------------------------------------------------------------------------
-|
-| Register your API routes here. These routes are loaded by the
-| RouteServiceProvider with the "api" middleware group, and are
-| automatically prefixed with "/api".
-|
-*/
+/** @var Router $router */
 
-Route::prefix('v1')->group(function () {
-    // API routes go here
-});
+// Example: $router->get('/users', [\App\Http\Controllers\Api\UserController::class, 'index']);
