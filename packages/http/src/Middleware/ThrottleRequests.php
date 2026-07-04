@@ -6,141 +6,154 @@ use Kyqo\Http\Request;
 use Kyqo\Http\Response;
 
 /**
- * Rate Limiting Middleware
+ * ThrottleRequests — rate-limiting middleware.
  *
- * SEC-3 FIX (maintained): Atomic read+write via flock(LOCK_EX).
- * SEC-V4-2 FIX: umask(0077) is applied BEFORE fopen() so the file is
- *               created with 0600 from the start — no race window.
- * MINOR FIX (maintained): Probabilistic GC sweep of expired entries.
+ * Limits the number of requests a client can make within a time window.
+ * Uses APCu when available, falls back to a file-based counter.
  *
- * FIX AUDIT-6: Rate-limit key now prefers the authenticated user ID over
- *              the raw IP address when the request is authenticated.
- *              This prevents a single user from bypassing the limit by
- *              rotating IPs, and avoids penalising all users behind a NAT.
+ * Usage in routes:
+ *   $router->middleware('throttle:60,1')->group(function () { ... });
  *
- *              Resolution order:
- *                1. auth()->id()  — if Auth is available and user is logged in
- *                2. $request->ip() — fallback for unauthenticated requests
+ * Registration in app/Http/Kernel.php:
+ *   protected array $routeMiddleware = [
+ *       'throttle' => \Kyqo\Http\Middleware\ThrottleRequests::class,
+ *   ];
+ *
+ * The parameter format is  "maxAttempts,decayMinutes" (both optional, defaults: 60,1).
  */
 class ThrottleRequests
 {
-    protected int    $maxAttempts;
-    protected int    $decayMinutes;
-    protected string $storePath;
-    protected int    $gcDivisor = 100;
+    private int    $maxAttempts;
+    private int    $decaySeconds;
+    private string $storageDir;
 
     public function __construct(int $maxAttempts = 60, int $decayMinutes = 1)
     {
         $this->maxAttempts  = $maxAttempts;
-        $this->decayMinutes = $decayMinutes;
-        $this->storePath    = sys_get_temp_dir() . '/kyqo_throttle';
+        $this->decaySeconds = $decayMinutes * 60;
 
-        if (!is_dir($this->storePath)) {
-            mkdir($this->storePath, 0700, true);
-        }
+        // Fallback file-based store
+        $base = function_exists('app') ? app()->storagePath('framework/throttle') : sys_get_temp_dir() . '/kyqo_throttle';
+        $this->storageDir = $base;
     }
 
-    public function handle(Request $request, \Closure $next): mixed
+    public function handle(Request $request, \Closure $next, int $maxAttempts = 0, int $decayMinutes = 0): Response
     {
-        if (random_int(1, $this->gcDivisor) === 1) {
-            $this->pruneExpired();
+        if ($maxAttempts > 0) $this->maxAttempts  = $maxAttempts;
+        if ($decayMinutes > 0) $this->decaySeconds = $decayMinutes * 60;
+
+        $key = $this->resolveKey($request);
+
+        if ($this->tooManyAttempts($key)) {
+            return $this->buildTooManyAttemptsResponse($key);
         }
 
-        $key  = $this->resolveKey($request);
-        $file = $this->storePath . '/' . $key . '.json';
-        $now  = time();
-
-        $oldUmask = umask(0077);
-        $fh = fopen($file, 'c+');
-        umask($oldUmask);
-
-        if ($fh === false) {
-            return $next($request);
-        }
-
-        flock($fh, LOCK_EX);
-
-        $raw  = stream_get_contents($fh);
-        $data = is_string($raw) ? json_decode($raw, true) : null;
-
-        if (!is_array($data) || ($data['reset_at'] ?? 0) <= $now) {
-            $data = ['count' => 0, 'reset_at' => $now + ($this->decayMinutes * 60)];
-        }
-
-        $data['count']++;
-
-        ftruncate($fh, 0);
-        rewind($fh);
-        fwrite($fh, json_encode($data));
-        fflush($fh);
-        flock($fh, LOCK_UN);
-        fclose($fh);
-
-        $remaining  = max(0, $this->maxAttempts - $data['count']);
-        $retryAfter = max(0, $data['reset_at'] - $now);
-
-        if ($data['count'] > $this->maxAttempts) {
-            return Response::make(
-                json_encode(['message' => 'Too Many Requests.', 'retry_after' => $retryAfter]),
-                429,
-                [
-                    'Content-Type'          => 'application/json',
-                    'Retry-After'           => (string) $retryAfter,
-                    'X-RateLimit-Limit'     => (string) $this->maxAttempts,
-                    'X-RateLimit-Remaining' => '0',
-                    'X-RateLimit-Reset'     => (string) $data['reset_at'],
-                ]
-            );
-        }
+        $this->hit($key);
 
         $response = $next($request);
 
-        if ($response instanceof Response) {
-            $response->setHeader('X-RateLimit-Limit',     (string) $this->maxAttempts);
-            $response->setHeader('X-RateLimit-Remaining', (string) $remaining);
-            $response->setHeader('X-RateLimit-Reset',     (string) $data['reset_at']);
+        return $this->addHeaders($response, $key);
+    }
+
+    // ── Key ─────────────────────────────────────────────────────────────────
+
+    protected function resolveKey(Request $request): string
+    {
+        return 'throttle:' . sha1($request->ip() . '|' . $request->path());
+    }
+
+    // ── Storage ──────────────────────────────────────────────────────────
+
+    protected function tooManyAttempts(string $key): bool
+    {
+        return $this->getAttempts($key) >= $this->maxAttempts;
+    }
+
+    protected function hit(string $key): void
+    {
+        if (function_exists('apcu_fetch') && ini_get('apc.enabled')) {
+            $current = apcu_fetch($key);
+            if ($current === false) {
+                apcu_store($key, 1, $this->decaySeconds);
+            } else {
+                apcu_inc($key);
+            }
+            return;
         }
 
+        // File fallback
+        $this->fileHit($key);
+    }
+
+    protected function getAttempts(string $key): int
+    {
+        if (function_exists('apcu_fetch') && ini_get('apc.enabled')) {
+            $val = apcu_fetch($key);
+            return $val === false ? 0 : (int) $val;
+        }
+        return $this->fileAttempts($key);
+    }
+
+    protected function getExpiresAt(string $key): int
+    {
+        if (function_exists('apcu_key_info') && ini_get('apc.enabled')) {
+            $info = apcu_key_info($key);
+            return $info ? (int) ($info['creation_time'] + $info['ttl']) : time() + $this->decaySeconds;
+        }
+        return $this->fileExpiresAt($key);
+    }
+
+    // ── File fallback ─────────────────────────────────────────────────────
+
+    private function filePath(string $key): string
+    {
+        if (!is_dir($this->storageDir)) @mkdir($this->storageDir, 0755, true);
+        return $this->storageDir . '/' . sha1($key) . '.throttle';
+    }
+
+    private function fileAttempts(string $key): int
+    {
+        $file = $this->filePath($key);
+        if (!file_exists($file)) return 0;
+        [$count, $expiresAt] = explode('|', file_get_contents($file));
+        if (time() > (int) $expiresAt) { @unlink($file); return 0; }
+        return (int) $count;
+    }
+
+    private function fileExpiresAt(string $key): int
+    {
+        $file = $this->filePath($key);
+        if (!file_exists($file)) return time() + $this->decaySeconds;
+        [, $expiresAt] = explode('|', file_get_contents($file));
+        return (int) $expiresAt;
+    }
+
+    private function fileHit(string $key): void
+    {
+        $file      = $this->filePath($key);
+        $count     = $this->fileAttempts($key);
+        $expiresAt = $count === 0 ? time() + $this->decaySeconds : $this->fileExpiresAt($key);
+        file_put_contents($file, ($count + 1) . '|' . $expiresAt, LOCK_EX);
+    }
+
+    // ── Response helpers ──────────────────────────────────────────────────
+
+    protected function buildTooManyAttemptsResponse(string $key): Response
+    {
+        $retryAfter = max(0, $this->getExpiresAt($key) - time());
+        $response   = new Response(
+            json_encode(['message' => 'Too Many Requests']),
+            429,
+            ['Content-Type' => 'application/json', 'Retry-After' => (string) $retryAfter]
+        );
         return $response;
     }
 
-    /**
-     * FIX AUDIT-6: Prefer authenticated user ID over IP.
-     *
-     * Uses the 'auth' alias from the Application container.
-     * If Auth is unavailable or the user is a guest, falls back to IP.
-     */
-    protected function resolveKey(Request $request): string
+    protected function addHeaders(Response $response, string $key): Response
     {
-        $identity = null;
-
-        try {
-            $auth     = \Kyqo\Core\Application::getInstance()->make('auth');
-            $userId   = $auth->id();
-            if ($userId !== null) {
-                $identity = 'user:' . $userId;
-            }
-        } catch (\Throwable) {
-            // Auth not available — use IP.
-        }
-
-        if ($identity === null) {
-            $identity = 'ip:' . ($request->ip() ?? '0.0.0.0');
-        }
-
-        $path = hash('sha256', $request->path());
-        return hash('sha256', $identity . '|' . $path);
-    }
-
-    protected function pruneExpired(): void
-    {
-        $now   = time();
-        $files = glob($this->storePath . '/*.json') ?: [];
-        foreach ($files as $file) {
-            $data = @json_decode((string) @file_get_contents($file), true);
-            if (!is_array($data) || ($data['reset_at'] ?? 0) <= $now) {
-                @unlink($file);
-            }
-        }
+        $remaining = max(0, $this->maxAttempts - $this->getAttempts($key));
+        $response->header('X-RateLimit-Limit',     (string) $this->maxAttempts);
+        $response->header('X-RateLimit-Remaining', (string) $remaining);
+        return $response;
     }
 }
