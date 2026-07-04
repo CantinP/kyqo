@@ -5,8 +5,11 @@ namespace Kyqo\Core\Events;
 /**
  * Kyqo Event Dispatcher
  *
- * MINOR-FINAL-5: Listener exceptions are caught and logged individually.
- * Remaining listeners are still called even if one throws.
+ * Supports Closure listeners, class-string listeners (resolved via the
+ * container when available), and object events dispatched by class name.
+ *
+ * Propagation is stopped automatically when $event->propagationStopped === true
+ * (only for Event subclasses).
  */
 class Dispatcher
 {
@@ -25,38 +28,46 @@ class Dispatcher
     }
 
     /**
+     * Forget all listeners for the given event.
+     */
+    public function forget(string $event): void
+    {
+        unset($this->listeners[$event]);
+    }
+
+    /**
      * Fire an event and collect all listener responses.
-     *
-     * FIX MINOR-FINAL-5: Each listener is wrapped in a try/catch.
-     * A failing listener logs an error but does NOT interrupt remaining listeners.
-     *
-     * @return array  [['result' => mixed]|['error' => string], ...]
+     * Supports both string events and Event objects.
+     * Propagation is stopped when $event->propagationStopped === true.
      */
     public function fire(string|object $event, mixed $payload = []): array
     {
-        [$event, $payload] = $this->parseEventAndPayload($event, $payload);
+        [$eventName, $payload] = $this->parseEventAndPayload($event, $payload);
 
-        $responses = [];
+        $responses  = [];
+        $eventObj   = is_object($event) ? $event : null;
 
-        foreach ($this->getListeners($event) as $listener) {
+        foreach ($this->getListeners($eventName) as $listener) {
+            if ($eventObj instanceof Event && $eventObj->propagationStopped) break;
+
             try {
-                $responses[] = ['result' => $listener($event, $payload)];
+                $responses[] = ['result' => $this->callListener($listener, $eventObj ?? $event, $payload)];
             } catch (\Throwable $e) {
-                error_log(
-                    sprintf(
-                        '[Kyqo\Events] Listener threw %s for event "%s": %s in %s:%d',
-                        get_class($e),
-                        $event,
-                        $e->getMessage(),
-                        $e->getFile(),
-                        $e->getLine()
-                    )
-                );
+                error_log(sprintf(
+                    '[Kyqo\Events] Listener threw %s for event "%s": %s in %s:%d',
+                    get_class($e), $eventName, $e->getMessage(), $e->getFile(), $e->getLine()
+                ));
                 $responses[] = ['error' => $e->getMessage()];
             }
         }
 
         return $responses;
+    }
+
+    /** Alias for fire() — matches Laravel’s API. */
+    public function dispatch(string|object $event, mixed $payload = []): array
+    {
+        return $this->fire($event, $payload);
     }
 
     public function hasListeners(string $event): bool
@@ -67,14 +78,35 @@ class Dispatcher
     public function getListeners(string $event): array
     {
         $listeners = $this->listeners[$event] ?? [];
-
         foreach ($this->wildcards as $pattern => $wilds) {
             if (fnmatch($pattern, $event)) {
                 $listeners = array_merge($listeners, $wilds);
             }
         }
-
         return $listeners;
+    }
+
+    // ── Internal ────────────────────────────────────────────────────────────
+
+    protected function callListener(\Closure|string $listener, mixed $event, array $payload): mixed
+    {
+        if ($listener instanceof \Closure) {
+            return $listener($event, $payload);
+        }
+
+        // Class-string listener: resolve and call handle()
+        try {
+            $app      = \Kyqo\Core\Application::getInstance();
+            $instance = $app !== null ? $app->make($listener) : new $listener();
+        } catch (\Throwable) {
+            $instance = new $listener();
+        }
+
+        if (is_object($event)) {
+            return $instance->handle($event);
+        }
+
+        return $instance->handle($event, ...$payload);
     }
 
     protected function hasWildcardListeners(string $event): bool
