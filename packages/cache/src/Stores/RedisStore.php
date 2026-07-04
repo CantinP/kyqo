@@ -8,18 +8,23 @@ use Kyqo\Cache\StoreInterface;
  * Redis cache store (ext-redis).
  *
  * Config keys expected:
- *   host     (default: 127.0.0.1)
- *   port     (default: 6379)
- *   password (optional)
- *   database (default: 0)
- *   prefix   (default: 'kyqo:')
- *   timeout  (default: 2.0)
+ *   host            (default: 127.0.0.1)
+ *   port            (default: 6379)
+ *   password        (optional)
+ *   database        (default: 0)
+ *   prefix          (default: 'kyqo:')
+ *   timeout         (default: 2.0)
+ *   allowed_classes (default: false) — passed to unserialize();
+ *                   set to true or an array of FQCNs to allow
+ *                   object deserialization. Mirrors RedisQueue behaviour.
  *
- * FIX AUDIT-4: Connection is lazy — the \Redis object is created on the first
- *              actual cache operation, not in __construct().
- *              This means a misconfigured or unavailable Redis server will NOT
- *              crash the application at boot time; it will only throw when
- *              the cache is actually used, producing a clear error in context.
+ * FIX AUDIT-4:  Connection is lazy — the \Redis object is created on the
+ *               first actual cache operation, not in __construct().
+ *
+ * FIX AUDIT-10: unserialize() now uses config['allowed_classes'] (default
+ *               false) instead of the hard-coded true that was present
+ *               before. A compromised / unauthenticated Redis instance
+ *               cannot be used to trigger PHP object-injection gadget chains.
  */
 class RedisStore implements StoreInterface
 {
@@ -41,7 +46,10 @@ class RedisStore implements StoreInterface
     {
         $raw = $this->connection()->get($this->prefix . $key);
         if ($raw === false) return $default;
-        return unserialize($raw, ['allowed_classes' => true]);
+
+        // FIX AUDIT-10: respect allowed_classes from config (default false).
+        $allowed = $this->config['allowed_classes'] ?? false;
+        return unserialize($raw, ['allowed_classes' => $allowed]);
     }
 
     public function put(string $key, mixed $value, int $ttl = 3600): bool

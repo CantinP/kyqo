@@ -5,17 +5,32 @@ namespace Kyqo\Core\Storage;
 /**
  * Local filesystem driver.
  *
- * All paths are resolved relative to $root and validated
- * against path traversal via realpath comparison.
+ * All paths are resolved relative to $root and validated against
+ * path traversal via a realpath-based guard.
+ *
+ * FIX AUDIT-10: safePath() now uses a two-step realpath guard instead of
+ * the previous naive str_contains('..') check, which could be bypassed
+ * with URL-encoded sequences (%2e%2e), absolute path injection (/etc/passwd),
+ * or symlink escapes:
+ *
+ *   Step 1 — if the target already exists on disk, its realpath() is compared
+ *            against $root. A path escaping the root throws immediately.
+ *
+ *   Step 2 — for paths not yet on disk (new files/dirs to be created), the
+ *            realpath() of the closest existing ancestor directory is checked
+ *            against $root, preventing injection via yet-to-be-created paths.
+ *
+ * The constructor also normalises $root via realpath() so that $root itself
+ * is never a raw relative or symlinked string.
  */
 class LocalDriver
 {
     public function __construct(protected string $root)
     {
-        $this->root = rtrim($root, DIRECTORY_SEPARATOR);
-        if (!is_dir($this->root)) {
-            mkdir($this->root, 0755, true);
+        if (!is_dir($root)) {
+            mkdir($root, 0755, true);
         }
+        $this->root = rtrim(realpath($root) ?: $root, DIRECTORY_SEPARATOR);
     }
 
     public function path(string $path): string
@@ -127,12 +142,44 @@ class LocalDriver
         return true;
     }
 
+    // ── Path guard ────────────────────────────────────────────────────────
+
+    /**
+     * FIX AUDIT-10: Realpath-based traversal guard.
+     *
+     * @throws \RuntimeException if the resolved path escapes $this->root.
+     */
     protected function safePath(string $relative): string
     {
-        if (str_contains($relative, '..')) {
+        $candidate = $this->root . DIRECTORY_SEPARATOR . ltrim($relative, DIRECTORY_SEPARATOR);
+
+        // Step 1: target already exists — check its canonical path.
+        $real = realpath($candidate);
+        if ($real !== false) {
+            if ($real !== $this->root
+                && !str_starts_with($real, $this->root . DIRECTORY_SEPARATOR)
+            ) {
+                throw new \RuntimeException("Path traversal detected: [{$relative}]");
+            }
+            return $real;
+        }
+
+        // Step 2: target does not yet exist — walk up to the first existing
+        // ancestor and verify it is inside $root.
+        $ancestor = $candidate;
+        do {
+            $ancestor     = dirname($ancestor);
+            $ancestorReal = realpath($ancestor);
+        } while ($ancestorReal === false && $ancestor !== dirname($ancestor));
+
+        if ($ancestorReal !== false
+            && $ancestorReal !== $this->root
+            && !str_starts_with($ancestorReal, $this->root . DIRECTORY_SEPARATOR)
+        ) {
             throw new \RuntimeException("Path traversal detected: [{$relative}]");
         }
-        return $this->root . DIRECTORY_SEPARATOR . ltrim($relative, DIRECTORY_SEPARATOR);
+
+        return $candidate;
     }
 
     protected function ensureDirectory(string $dir): void
