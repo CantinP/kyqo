@@ -179,10 +179,6 @@ if (!function_exists('route')) {
     }
 }
 
-/**
- * FIX A5 – route_url() was called in Auth controllers but didn't exist.
- * Alias to route().
- */
 if (!function_exists('route_url')) {
     function route_url(string $name, array $parameters = []): string
     {
@@ -222,10 +218,18 @@ if (!function_exists('method_field')) {
     }
 }
 
+/**
+ * Translate a key using the Translator service.
+ * Falls back to the key itself when no translation exists.
+ */
 if (!function_exists('trans')) {
     function trans(string $key, array $replace = [], ?string $locale = null): string
     {
-        return $key;
+        try {
+            return app('translator')->get($key, $replace, $locale);
+        } catch (\Throwable) {
+            return $key;
+        }
     }
 }
 
@@ -233,6 +237,27 @@ if (!function_exists('__')) {
     function __(string $key, array $replace = [], ?string $locale = null): string
     {
         return trans($key, $replace, $locale);
+    }
+}
+
+/** Short alias for trans(). */
+if (!function_exists('lang')) {
+    function lang(string $key, array $replace = [], ?string $locale = null): string
+    {
+        return trans($key, $replace, $locale);
+    }
+}
+
+/**
+ * Broadcast an event.
+ *
+ * Usage:
+ *   broadcast(new OrderShipped($order));
+ */
+if (!function_exists('broadcast')) {
+    function broadcast(\Kyqo\Broadcasting\ShouldBroadcast $event): void
+    {
+        app('broadcast')->event($event);
     }
 }
 
@@ -304,5 +329,18 @@ if (!function_exists('event')) {
     function event(object $event): mixed
     {
         return app('events')->dispatch($event);
+    }
+}
+
+if (!function_exists('notify')) {
+    /**
+     * Send a notification to a notifiable.
+     *
+     * Usage:
+     *   notify($user, new InvoicePaid($invoice));
+     */
+    function notify(object $notifiable, \Kyqo\Notifications\Notification $notification): void
+    {
+        app(\Kyqo\Notifications\NotificationSender::class)->send($notifiable, $notification);
     }
 }
